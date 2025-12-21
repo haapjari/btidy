@@ -1,0 +1,81 @@
+package main
+
+import (
+	"fmt"
+
+	"github.com/spf13/cobra"
+
+	"btidy/pkg/usecase"
+)
+
+func buildRenameCommand() *cobra.Command {
+	return &cobra.Command{
+		Use:   "rename [path]",
+		Short: "Rename files with date prefix and sanitized names",
+		Long: `Renames files in place with consistent naming:
+  - Adds modification date prefix (YYYY-MM-DD_)
+  - Converts to lowercase
+  - Replaces spaces with underscores
+  - Converts Finnish characters (ä→a, ö→o, å→a)
+
+Examples:
+  btidy rename --dry-run ./backup    # Preview changes
+  btidy rename ./backup              # Apply changes
+  btidy rename -v ./backup           # Verbose output
+
+Before: "My Document.pdf" (modified 2018-06-15)
+After:  "2018-06-15_my_document.pdf"`,
+		Args: cobra.ExactArgs(1),
+		RunE: runRename,
+	}
+}
+
+func runRename(_ *cobra.Command, args []string) error {
+	printDryRunBanner()
+	printCollectingFiles()
+
+	progress := startProgress("Working")
+	execution, err := newUseCaseService().RunRename(usecase.RenameRequest{
+		TargetDir: args[0],
+		DryRun:    dryRun,
+	})
+	progress.Stop()
+	if err != nil {
+		return err
+	}
+
+	printCommandHeader("RENAME", execution.RootDir)
+	printFoundFiles(execution.FileCount, execution.CollectDuration, true)
+
+	if execution.FileCount == 0 {
+		fmt.Println("No files to process.")
+		return nil
+	}
+
+	result := execution.Result
+
+	if verbose || dryRun {
+		for _, op := range result.Operations {
+			if op.Skipped {
+				fmt.Printf("SKIP: %s (%s)\n", op.OriginalName, op.SkipReason)
+			} else if op.Error != nil {
+				fmt.Printf("ERROR: %s -> %s: %v\n", op.OriginalName, op.NewName, op.Error)
+			} else {
+				fmt.Printf("RENAME: %s\n", op.OriginalPath)
+				fmt.Printf("    TO: %s\n", op.NewPath)
+			}
+		}
+		fmt.Println()
+	}
+
+	printSummary(
+		fmt.Sprintf("Total files:  %d", result.TotalFiles),
+		fmt.Sprintf("Renamed:      %d", result.RenamedCount),
+		fmt.Sprintf("Skipped:      %d", result.SkippedCount),
+		fmt.Sprintf("Deleted:      %d", result.DeletedCount),
+		fmt.Sprintf("Errors:       %d", result.ErrorCount),
+	)
+	printDryRunHint()
+
+	return nil
+}
