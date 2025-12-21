@@ -1,6 +1,6 @@
 # File Organizer
 
-- Just a simple tool to organize my backup files by flattening direct structures, renaming files with timestamps and removing duplicates.
+A simple tool to organize backup files by flattening directory structures, renaming files with timestamps, and removing duplicates.
 
 ## Problem
 
@@ -12,7 +12,7 @@ When you accumulate backup copies over time, you end up with:
 
 ## Solution
 
-This tool works in two phases:
+This tool works in three phases:
 
 ### Phase 1: Rename
 
@@ -29,29 +29,83 @@ After:  2018-06-15_my_document_final.pdf
 - Converts Finnish characters: `ä→a`, `ö→o`, `å→a`
 - Removes special characters
 
-### Phase 2: Flatten (coming soon)
+### Phase 2: Flatten
 
-Moves all files to root directory and removes true duplicates (same size + same modification time).
+Moves all files to root directory and removes duplicates (same name + size + modification time).
 
-## Examples
+```
+Before:
+  backup/
+    Documents/Work/report.pdf
+    Photos/Vacation/photo.jpg
+
+After:
+  backup/
+    report.pdf
+    photo.jpg
+```
+
+### Phase 3: Duplicate
+
+Finds and removes duplicate files using **content hashing** (SHA256):
+
+- Groups files by size (fast pre-filter)
+- Computes SHA256 hash to identify true duplicates
+- Uses partial hashing for large files (performance optimization)
+- Keeps one copy (alphabetically first), removes the rest
+
+This is the most reliable approach - files are only considered duplicates if their content is byte-for-byte identical.
+
+## Usage
 
 ```bash
-# See what would be renamed (dry run)
-./file-organizer --dry-run --phase rename /path/to/2018-backup
+# Always use --dry-run first to preview changes!
 
-# Example output:
-#   RENAME: /backup/docs/CV (Final).docx
-#       TO: /backup/docs/2018-03-15_cv_final.docx
-#   RENAME: /backup/photos/Työpöytä.jpg  
-#       TO: /backup/photos/2018-06-20_tyopoyta.jpg
-#   SKIP:   /backup/2018-01-01_already-named.pdf (name unchanged)
+# Phase 1: Rename files with timestamps
+./file-organizer rename --dry-run /path/to/backup
+./file-organizer rename /path/to/backup
 
-# Actually rename the files
-./file-organizer --phase rename /path/to/2018-backup
+# Phase 2: Flatten directory structure
+./file-organizer flatten --dry-run /path/to/backup
+./file-organizer flatten /path/to/backup
 
-# View operation log
-cat /path/to/2018-backup/organizer.log
+# Phase 3: Remove duplicate files by content
+./file-organizer duplicate --dry-run /path/to/backup
+./file-organizer duplicate /path/to/backup
+
+# Verbose output
+./file-organizer duplicate -v --dry-run /path/to/backup
 ```
+
+## Typical Workflow
+
+```bash
+# 1. First rename files for consistent naming
+./file-organizer rename /path/to/backup/2018
+
+# 2. Then flatten the directory structure  
+./file-organizer flatten /path/to/backup/2018
+
+# 3. Finally remove any remaining duplicates
+./file-organizer duplicate /path/to/backup/2018
+```
+
+## Safety
+
+- **Dry-run by default mindset**: Always use `--dry-run` first to preview changes
+- **Path containment**: The tool will NEVER modify files outside the specified directory
+- **Content verification**: Duplicates are verified by SHA256 hash, not just filename
+
+## Building
+
+```bash
+make build        # Build the binary
+make test         # Run tests
+make test-race    # Run tests with race detector
+make lint         # Run linter
+make check        # Run all checks (fmt, vet, lint, test-race)
+```
+
 ## License
 
 MIT

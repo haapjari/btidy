@@ -185,16 +185,7 @@ func (r *Renamer) resolveNameConflict(op *RenameOperation, f collector.FileInfo,
 	}
 
 	if sameFileInfo(usage.file, f) {
-		op.Skipped = true
-		op.SkipReason = "duplicate file already exists"
-		op.Deleted = true
-		if !r.dryRun {
-			if err := os.Remove(f.Path); err != nil {
-				op.Error = err
-			}
-		} else {
-			op.Deleted = false
-		}
+		r.markAsDuplicate(op, f)
 		return "", true
 	}
 
@@ -202,6 +193,20 @@ func (r *Renamer) resolveNameConflict(op *RenameOperation, f collector.FileInfo,
 	usage.count++
 	usageMap[baseName] = usage
 	return newName, false
+}
+
+func (r *Renamer) markAsDuplicate(op *RenameOperation, f collector.FileInfo) {
+	op.Skipped = true
+	op.SkipReason = "duplicate file already exists"
+	op.Deleted = !r.dryRun
+
+	if r.dryRun {
+		return
+	}
+
+	if err := os.Remove(f.Path); err != nil {
+		op.Error = err
+	}
 }
 
 func (r *Renamer) handleExistingTarget(op *RenameOperation, f collector.FileInfo, info os.FileInfo) {
