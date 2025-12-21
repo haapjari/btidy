@@ -1,0 +1,22 @@
+# Binaries
+file-organizer
+*.exe
+
+# Test coverage
+coverage.out
+coverage.html
+
+# Tools (installed via make tools)
+.tools/
+.golangci-cache/
+.gocache/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db

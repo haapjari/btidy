@@ -1,0 +1,405 @@
+package safepath_test
+
+import (
+	"os"
+	"path/filepath"
+	"testing"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+
+	"file-organizer/pkg/safepath"
+)
+
+func TestNew(t *testing.T) {
+	t.Parallel()
+
+	t.Run("valid directory", func(t *testing.T) {
+		t.Parallel()
+		tmpDir := t.TempDir()
+
+		v, err := safepath.New(tmpDir)
+		require.NoError(t, err)
+		assert.Equal(t, tmpDir, v.Root())
+	})
+
+	t.Run("non-existent directory", func(t *testing.T) {
+		t.Parallel()
+		_, err := safepath.New("/nonexistent/path/12345")
+		assert.Error(t, err)
+	})
+
+	t.Run("file instead of directory", func(t *testing.T) {
+		t.Parallel()
+		tmpDir := t.TempDir()
+		tmpFile := filepath.Join(tmpDir, "file.txt")
+		require.NoError(t, os.WriteFile(tmpFile, []byte("test"), 0o644))
+
+		_, err := safepath.New(tmpFile)
+		assert.Error(t, err)
+	})
+
+	t.Run("relative path converted to absolute", func(t *testing.T) {
+		t.Parallel()
+		tmpDir := t.TempDir()
+		subDir := filepath.Join(tmpDir, "subdir")
+		require.NoError(t, os.Mkdir(subDir, 0o755))
+
+		v, err := safepath.New(subDir)
+		require.NoError(t, err)
+		assert.True(t, filepath.IsAbs(v.Root()))
+	})
+}
+
+func TestContains(t *testing.T) {
+	t.Parallel()
+	tmpDir := t.TempDir()
+
+	subDir := filepath.Join(tmpDir, "sub")
+	deepDir := filepath.Join(subDir, "deep")
+	require.NoError(t, os.MkdirAll(deepDir, 0o755))
+
+	v, err := safepath.New(tmpDir)
+	require.NoError(t, err)
+
+	tests := []struct {
+		name     string
+		path     string
+		expected bool
+	}{
+		{"root itself", tmpDir, true},
+		{"subdirectory", subDir, true},
+		{"deep subdirectory", deepDir, true},
+		{"file in root", filepath.Join(tmpDir, "file.txt"), true},
+		{"file in subdir", filepath.Join(subDir, "file.txt"), true},
+		{"parent directory", filepath.Dir(tmpDir), false},
+		{"sibling directory", filepath.Join(filepath.Dir(tmpDir), "sibling"), false},
+		{"absolute outside path", "/etc/passwd", false},
+		{"path with dot-dot", filepath.Join(tmpDir, "sub", "..", "..", "outside"), false},
+		{"path with dots staying inside", filepath.Join(tmpDir, "sub", "..", "sub"), true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			assert.Equal(t, tt.expected, v.Contains(tt.path))
+		})
+	}
+}
+
+func TestValidatePath(t *testing.T) {
+	t.Parallel()
+	tmpDir := t.TempDir()
+
+	v, err := safepath.New(tmpDir)
+	require.NoError(t, err)
+
+	t.Run("valid path returns nil", func(t *testing.T) {
+		t.Parallel()
+		err := v.ValidatePath(filepath.Join(tmpDir, "valid.txt"))
+		assert.NoError(t, err)
+	})
+
+	t.Run("escaping path returns error", func(t *testing.T) {
+		t.Parallel()
+		err := v.ValidatePath(filepath.Join(tmpDir, "..", "escape.txt"))
+		assert.Error(t, err)
+	})
+}
+
+func TestValidateSymlink(t *testing.T) {
+	t.Parallel()
+
+	t.Run("symlink within root", func(t *testing.T) {
+		t.Parallel()
+		tmpDir := t.TempDir()
+		subDir := filepath.Join(tmpDir, "sub")
+		require.NoError(t, os.Mkdir(subDir, 0o755))
+		targetFile := filepath.Join(tmpDir, "target.txt")
+		require.NoError(t, os.WriteFile(targetFile, []byte("target"), 0o644))
+
+		v, err := safepath.New(tmpDir)
+		require.NoError(t, err)
+
+		linkPath := filepath.Join(subDir, "link_inside")
+		if err := os.Symlink(targetFile, linkPath); err != nil {
+			t.Skip("symlinks not supported")
+		}
+
+		assert.NoError(t, v.ValidateSymlink(linkPath))
+	})
+
+	t.Run("symlink pointing outside root", func(t *testing.T) {
+		t.Parallel()
+		tmpDir := t.TempDir()
+		subDir := filepath.Join(tmpDir, "sub")
+		require.NoError(t, os.Mkdir(subDir, 0o755))
+
+		v, err := safepath.New(tmpDir)
+		require.NoError(t, err)
+
+		linkPath := filepath.Join(subDir, "link_outside")
+		if err := os.Symlink("/etc/passwd", linkPath); err != nil {
+			t.Skip("symlinks not supported")
+		}
+
+		assert.Error(t, v.ValidateSymlink(linkPath))
+	})
+
+	t.Run("symlink with relative path staying inside", func(t *testing.T) {
+		t.Parallel()
+		tmpDir := t.TempDir()
+		subDir := filepath.Join(tmpDir, "sub")
+		require.NoError(t, os.Mkdir(subDir, 0o755))
+		targetFile := filepath.Join(tmpDir, "target.txt")
+		require.NoError(t, os.WriteFile(targetFile, []byte("target"), 0o644))
+
+		v, err := safepath.New(tmpDir)
+		require.NoError(t, err)
+
+		linkPath := filepath.Join(subDir, "link_relative")
+		if err := os.Symlink("../target.txt", linkPath); err != nil {
+			t.Skip("symlinks not supported")
+		}
+
+		assert.NoError(t, v.ValidateSymlink(linkPath))
+	})
+
+	t.Run("symlink with relative path escaping", func(t *testing.T) {
+		t.Parallel()
+		tmpDir := t.TempDir()
+		subDir := filepath.Join(tmpDir, "sub")
+		require.NoError(t, os.Mkdir(subDir, 0o755))
+
+		v, err := safepath.New(tmpDir)
+		require.NoError(t, err)
+
+		linkPath := filepath.Join(subDir, "link_escape")
+		if err := os.Symlink("../../../../../../etc/passwd", linkPath); err != nil {
+			t.Skip("symlinks not supported")
+		}
+
+		assert.Error(t, v.ValidateSymlink(linkPath))
+	})
+
+	t.Run("regular file (not symlink)", func(t *testing.T) {
+		t.Parallel()
+		tmpDir := t.TempDir()
+		targetFile := filepath.Join(tmpDir, "target.txt")
+		require.NoError(t, os.WriteFile(targetFile, []byte("target"), 0o644))
+
+		v, err := safepath.New(tmpDir)
+		require.NoError(t, err)
+
+		assert.NoError(t, v.ValidateSymlink(targetFile))
+	})
+}
+
+func TestSafeRename(t *testing.T) {
+	t.Parallel()
+
+	t.Run("rename within root", func(t *testing.T) {
+		t.Parallel()
+		tmpDir := t.TempDir()
+		src := filepath.Join(tmpDir, "source.txt")
+		dst := filepath.Join(tmpDir, "dest.txt")
+
+		require.NoError(t, os.WriteFile(src, []byte("content"), 0o644))
+
+		v, err := safepath.New(tmpDir)
+		require.NoError(t, err)
+
+		require.NoError(t, v.SafeRename(src, dst))
+
+		assert.NoFileExists(t, src)
+		assert.FileExists(t, dst)
+	})
+
+	t.Run("rename to outside root blocked", func(t *testing.T) {
+		t.Parallel()
+		tmpDir := t.TempDir()
+		src := filepath.Join(tmpDir, "inside.txt")
+		require.NoError(t, os.WriteFile(src, []byte("content"), 0o644))
+
+		v, err := safepath.New(tmpDir)
+		require.NoError(t, err)
+
+		dst := filepath.Join(tmpDir, "..", "outside.txt")
+		require.Error(t, v.SafeRename(src, dst))
+		assert.FileExists(t, src)
+	})
+
+	t.Run("rename from outside root blocked", func(t *testing.T) {
+		t.Parallel()
+		tmpDir := t.TempDir()
+		outsideDir := t.TempDir()
+		outsideFile := filepath.Join(outsideDir, "outside.txt")
+		require.NoError(t, os.WriteFile(outsideFile, []byte("content"), 0o644))
+
+		v, err := safepath.New(tmpDir)
+		require.NoError(t, err)
+
+		dst := filepath.Join(tmpDir, "imported.txt")
+		assert.Error(t, v.SafeRename(outsideFile, dst))
+	})
+}
+
+func TestSafeRemove(t *testing.T) {
+	t.Parallel()
+
+	t.Run("remove within root", func(t *testing.T) {
+		t.Parallel()
+		tmpDir := t.TempDir()
+		file := filepath.Join(tmpDir, "remove_me.txt")
+		require.NoError(t, os.WriteFile(file, []byte("content"), 0o644))
+
+		v, err := safepath.New(tmpDir)
+		require.NoError(t, err)
+
+		require.NoError(t, v.SafeRemove(file))
+		assert.NoFileExists(t, file)
+	})
+
+	t.Run("remove outside root blocked", func(t *testing.T) {
+		t.Parallel()
+		tmpDir := t.TempDir()
+
+		v, err := safepath.New(tmpDir)
+		require.NoError(t, err)
+
+		outsideFile := filepath.Join(tmpDir, "..", "should_not_delete.txt")
+		assert.Error(t, v.SafeRemove(outsideFile))
+	})
+}
+
+func TestSafeRemoveDir(t *testing.T) {
+	t.Parallel()
+
+	t.Run("remove empty directory within root", func(t *testing.T) {
+		t.Parallel()
+		tmpDir := t.TempDir()
+		dir := filepath.Join(tmpDir, "empty_dir")
+		require.NoError(t, os.Mkdir(dir, 0o755))
+
+		v, err := safepath.New(tmpDir)
+		require.NoError(t, err)
+
+		require.NoError(t, v.SafeRemoveDir(dir))
+		assert.NoDirExists(t, dir)
+	})
+
+	t.Run("cannot remove root directory itself", func(t *testing.T) {
+		t.Parallel()
+		tmpDir := t.TempDir()
+
+		v, err := safepath.New(tmpDir)
+		require.NoError(t, err)
+
+		assert.Error(t, v.SafeRemoveDir(tmpDir))
+	})
+
+	t.Run("remove directory outside root blocked", func(t *testing.T) {
+		t.Parallel()
+		tmpDir := t.TempDir()
+
+		v, err := safepath.New(tmpDir)
+		require.NoError(t, err)
+
+		outsideDir := filepath.Join(tmpDir, "..", "should_not_delete_dir")
+		assert.Error(t, v.SafeRemoveDir(outsideDir))
+	})
+}
+
+func TestResolveSafePath(t *testing.T) {
+	t.Parallel()
+	tmpDir := t.TempDir()
+
+	subDir := filepath.Join(tmpDir, "sub")
+	require.NoError(t, os.Mkdir(subDir, 0o755))
+
+	v, err := safepath.New(tmpDir)
+	require.NoError(t, err)
+
+	t.Run("resolve relative path within root", func(t *testing.T) {
+		t.Parallel()
+		result, err := v.ResolveSafePath(subDir, "file.txt")
+		require.NoError(t, err)
+		assert.Equal(t, filepath.Join(subDir, "file.txt"), result)
+	})
+
+	t.Run("resolve absolute path within root", func(t *testing.T) {
+		t.Parallel()
+		absPath := filepath.Join(tmpDir, "absolute.txt")
+		result, err := v.ResolveSafePath(subDir, absPath)
+		require.NoError(t, err)
+		assert.Equal(t, absPath, result)
+	})
+
+	t.Run("reject escaping relative path", func(t *testing.T) {
+		t.Parallel()
+		_, err := v.ResolveSafePath(subDir, "../../escape.txt")
+		assert.Error(t, err)
+	})
+
+	t.Run("reject escaping absolute path", func(t *testing.T) {
+		t.Parallel()
+		_, err := v.ResolveSafePath(subDir, "/etc/passwd")
+		assert.Error(t, err)
+	})
+}
+
+func TestPathTraversalAttacks(t *testing.T) {
+	t.Parallel()
+	tmpDir := t.TempDir()
+
+	v, err := safepath.New(tmpDir)
+	require.NoError(t, err)
+
+	attackPaths := []string{
+		"../etc/passwd",
+		"..\\etc\\passwd",
+		"....//....//etc/passwd",
+		"..%2f..%2fetc/passwd",
+		"..%252f..%252fetc/passwd",
+		"/etc/passwd",
+		"sub/../../../etc/passwd",
+		"sub/./../../etc/passwd",
+		filepath.Join(tmpDir, "..", "escape"),
+		filepath.Join(tmpDir, "sub", "..", "..", "escape"),
+	}
+
+	for _, attack := range attackPaths {
+		t.Run(attack, func(t *testing.T) {
+			t.Parallel()
+			assert.False(t, v.Contains(attack), "path %q should not be contained in root", attack)
+		})
+	}
+}
+
+func TestEdgeCases(t *testing.T) {
+	t.Parallel()
+	tmpDir := t.TempDir()
+
+	v, err := safepath.New(tmpDir)
+	require.NoError(t, err)
+
+	t.Run("empty relative path resolves to base", func(t *testing.T) {
+		t.Parallel()
+		result, err := v.ResolveSafePath(tmpDir, "")
+		require.NoError(t, err)
+		assert.Equal(t, tmpDir, result)
+	})
+
+	t.Run("single dot path", func(t *testing.T) {
+		t.Parallel()
+		result, err := v.ResolveSafePath(tmpDir, ".")
+		require.NoError(t, err)
+		assert.Equal(t, tmpDir, result)
+	})
+
+	t.Run("path with multiple slashes", func(t *testing.T) {
+		t.Parallel()
+		path := filepath.Join(tmpDir, "sub", "file.txt")
+		assert.True(t, v.Contains(path))
+	})
+}
