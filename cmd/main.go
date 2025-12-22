@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"sync"
 	"time"
 
@@ -12,12 +13,14 @@ import (
 	"file-organizer/pkg/collector"
 	"file-organizer/pkg/deduplicator"
 	"file-organizer/pkg/flattener"
+	"file-organizer/pkg/manifest"
 	"file-organizer/pkg/renamer"
 )
 
 var (
 	dryRun  bool
 	verbose bool
+	workers int
 )
 
 func main() {
@@ -25,6 +28,7 @@ func main() {
 	rootCmd.AddCommand(buildRenameCommand())
 	rootCmd.AddCommand(buildFlattenCommand())
 	rootCmd.AddCommand(buildDuplicateCommand())
+	rootCmd.AddCommand(buildManifestCommand())
 
 	if err := rootCmd.Execute(); err != nil {
 		os.Exit(1)
@@ -41,6 +45,7 @@ Commands:
   rename     Renames files in place with consistent naming
   flatten    Moves all files to root directory, removes duplicates
   duplicate  Finds and removes duplicate files by content hash
+  manifest   Creates a cryptographic inventory of all files
 
 Examples:
   # Preview what rename would do (recommended first step)
@@ -60,6 +65,11 @@ Examples:
   file-organizer flatten /path/to/backup/2018
   file-organizer duplicate /path/to/backup/2018
 
+  # Safe workflow with verification
+  file-organizer manifest /backup -o before.json
+  file-organizer flatten /backup
+  file-organizer verify --manifest before.json /backup
+
 Safety:
   The tool will NEVER modify files outside the specified directory.
   All operations are contained within the target path.`,
@@ -67,6 +77,7 @@ Safety:
 
 	cmd.PersistentFlags().BoolVar(&dryRun, "dry-run", false, "Show what would be done without making changes")
 	cmd.PersistentFlags().BoolVarP(&verbose, "verbose", "v", false, "Verbose output")
+	cmd.PersistentFlags().IntVar(&workers, "workers", runtime.NumCPU(), "Number of parallel workers for hashing")
 
 	return cmd
 }
@@ -147,6 +158,92 @@ Use --dry-run first to review what would be deleted!`,
 	}
 }
 
+func buildManifestCommand() *cobra.Command {
+	var outputPath string
+
+	cmd := &cobra.Command{
+		Use:   "manifest [path]",
+		Short: "Create a cryptographic inventory of all files",
+		Long: `Creates a manifest (JSON file) containing SHA256 hashes of all files.
+
+The manifest can be used to:
+  - Verify no data was lost after operations (with verify command)
+  - Track file inventory over time
+  - Detect changes or corruption
+
+Examples:
+  file-organizer manifest ./backup -o inventory.json
+  file-organizer manifest /path/to/photos -o before.json
+  file-organizer manifest --workers 8 ./backup -o manifest.json
+
+Typical safe workflow:
+  1. file-organizer manifest /backup -o before.json
+  2. file-organizer flatten /backup
+  3. file-organizer verify --manifest before.json /backup`,
+		Args: cobra.ExactArgs(1),
+		RunE: func(_ *cobra.Command, args []string) error {
+			return runManifest(args, outputPath)
+		},
+	}
+
+	cmd.Flags().StringVarP(&outputPath, "output", "o", "manifest.json", "Output path for manifest file")
+
+	return cmd
+}
+
+func runManifest(args []string, outputPath string) error {
+	absPath, err := validateAndResolvePath(args[0])
+	if err != nil {
+		return err
+	}
+
+	fmt.Printf("Command: MANIFEST\n")
+	fmt.Printf("Root directory: %s\n", absPath)
+	fmt.Printf("Output file: %s\n", outputPath)
+	fmt.Printf("Workers: %d\n", workers)
+	fmt.Println("Collecting files and computing hashes...")
+
+	progress := startProgress("Hashing")
+	startTime := time.Now()
+
+	g, err := manifest.NewGenerator(absPath, workers)
+	if err != nil {
+		progress.Stop()
+		return fmt.Errorf("failed to create manifest generator: %w", err)
+	}
+
+	var lastProgress int
+	m, err := g.Generate(manifest.GenerateOptions{
+		SkipFiles: []string{".DS_Store", "Thumbs.db", "organizer.log"},
+		OnProgress: func(processed, total int, _ string) {
+			if verbose && processed%100 == 0 && processed != lastProgress {
+				lastProgress = processed
+				fmt.Printf("Progress: %d / %d files\n", processed, total)
+			}
+		},
+	})
+	if err != nil {
+		progress.Stop()
+		return fmt.Errorf("failed to generate manifest: %w", err)
+	}
+
+	progress.Stop()
+
+	if err := m.Save(outputPath); err != nil {
+		return fmt.Errorf("failed to save manifest: %w", err)
+	}
+
+	fmt.Printf("\nCompleted in %v\n", time.Since(startTime).Round(time.Millisecond))
+	fmt.Println()
+	fmt.Println("=== Summary ===")
+	fmt.Printf("Total files:    %d\n", m.FileCount())
+	fmt.Printf("Unique files:   %d\n", m.UniqueFileCount())
+	fmt.Printf("Total size:     %s\n", formatBytes(m.TotalSize()))
+	fmt.Printf("Manifest saved: %s\n", outputPath)
+
+	return nil
+}
+
 func validateAndResolvePath(targetDir string) (string, error) {
 	// Validate directory exists.
 	info, err := os.Stat(targetDir)
@@ -180,7 +277,7 @@ func runRename(_ *cobra.Command, args []string) error {
 	fmt.Printf("Command: RENAME\n")
 	fmt.Printf("Root directory: %s\n", absPath)
 	fmt.Println("Collecting files...")
-	progress := startProgress("Working", 5*time.Second)
+	progress := startProgress("Working")
 	startTime := time.Now()
 
 	c := collector.New(collector.Options{
@@ -253,7 +350,7 @@ func runFlatten(_ *cobra.Command, args []string) error {
 	fmt.Printf("Command: FLATTEN\n")
 	fmt.Printf("Root directory: %s\n", absPath)
 	fmt.Println("Collecting files...")
-	progress := startProgress("Working", 5*time.Second)
+	progress := startProgress("Working")
 	startTime := time.Now()
 
 	c := collector.New(collector.Options{
@@ -322,7 +419,7 @@ func runDuplicate(_ *cobra.Command, args []string) error {
 	fmt.Printf("Command: DUPLICATE\n")
 	fmt.Printf("Root directory: %s\n", absPath)
 	fmt.Println("Collecting files...")
-	progress := startProgress("Working", 5*time.Second)
+	progress := startProgress("Working")
 	startTime := time.Now()
 
 	c := collector.New(collector.Options{
@@ -432,14 +529,14 @@ type progressReporter struct {
 	doneCh   chan struct{}
 }
 
-func startProgress(label string, interval time.Duration) *progressReporter {
+func startProgress(label string) *progressReporter {
 	p := &progressReporter{
 		stopCh: make(chan struct{}),
 		doneCh: make(chan struct{}),
 	}
 
 	startTime := time.Now()
-	ticker := time.NewTicker(interval)
+	ticker := time.NewTicker(5 * time.Second)
 
 	go func() {
 		defer close(p.doneCh)
