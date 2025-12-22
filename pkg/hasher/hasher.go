@@ -13,7 +13,7 @@ import (
 
 const (
 	// PartialHashSize is the number of bytes to read from start and end for partial hash.
-	PartialHashSize = 4096
+	PartialHashSize = 4096 // TODO: Why 4096 (?)
 	// SmallFileThreshold - files smaller than this skip partial hash and go straight to full hash.
 	SmallFileThreshold = PartialHashSize * 2
 )
@@ -30,6 +30,9 @@ type HashResult struct {
 type Hasher struct {
 	workers int
 }
+
+// TODO: I don't understand this path. We have a type that returns a function. 
+// we pass slice of types to a constructor. Explain this constructor process to me.
 
 // Option configures a Hasher.
 type Option func(*Hasher)

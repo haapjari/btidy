@@ -2,11 +2,13 @@
 package flattener
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 
 	"file-organizer/pkg/collector"
+	"file-organizer/pkg/hasher"
 	"file-organizer/pkg/safepath"
 )
 
@@ -14,8 +16,9 @@ import (
 type MoveOperation struct {
 	OriginalPath string
 	NewPath      string
-	Duplicate    bool // true if this file was deleted as duplicate
-	Skipped      bool // true if skipped (e.g., already in root)
+	Hash         string // SHA256 content hash
+	Duplicate    bool   // true if this file was deleted as duplicate
+	Skipped      bool   // true if skipped (e.g., already in root)
 	SkipReason   string
 	Error        error
 }
@@ -36,6 +39,7 @@ type Flattener struct {
 	dryRun    bool
 	rootDir   string
 	validator *safepath.Validator
+	hasher    *hasher.Hasher
 }
 
 // New creates a new Flattener with path containment validation.
@@ -49,32 +53,34 @@ func New(rootDir string, dryRun bool) (*Flattener, error) {
 		rootDir:   rootDir,
 		dryRun:    dryRun,
 		validator: v,
+		hasher:    hasher.New(),
 	}, nil
 }
 
-// fileKey uniquely identifies a file by name + size + mtime.
-type fileKey struct {
-	name  string
-	size  int64
-	mtime int64
-}
-
 // FlattenFiles moves all files to root directory, removing duplicates.
-// Duplicates are files with same name, size, and modification time.
+// Duplicates are identified by SHA256 content hash - this is safe and reliable.
 func (f *Flattener) FlattenFiles(files []collector.FileInfo) Result {
 	result := Result{
 		TotalFiles: len(files),
 		Operations: make([]MoveOperation, 0, len(files)),
 	}
 
-	// Track files by key to detect duplicates.
-	seen := make(map[fileKey]string) // key -> path of first occurrence
+	if len(files) == 0 {
+		return result
+	}
+
+	// Step 1: Pre-compute hashes for all files using parallel hashing.
+	fileHashes := f.computeHashes(files)
+
+	// Step 2: Track seen content hashes to detect duplicates.
+	seenHash := make(map[string]string) // hash -> path of first occurrence
 
 	// Track name conflicts (same name but different content).
 	nameCount := make(map[string]int)
 
 	for i := range files {
-		op := f.processFile(&files[i], seen, nameCount)
+		hash := fileHashes[files[i].Path]
+		op := f.processFile(&files[i], hash, seenHash, nameCount)
 		result.Operations = append(result.Operations, op)
 
 		if op.Error != nil {
@@ -96,9 +102,33 @@ func (f *Flattener) FlattenFiles(files []collector.FileInfo) Result {
 	return result
 }
 
-func (f *Flattener) processFile(file *collector.FileInfo, seen map[fileKey]string, nameCount map[string]int) MoveOperation {
+// computeHashes pre-computes SHA256 hashes for all files using parallel hashing.
+func (f *Flattener) computeHashes(files []collector.FileInfo) map[string]string {
+	hashes := make(map[string]string, len(files))
+
+	// Prepare files for parallel hashing.
+	toHash := make([]hasher.FileToHash, len(files))
+	for i, file := range files {
+		toHash[i] = hasher.FileToHash{
+			Path: file.Path,
+			Size: file.Size,
+		}
+	}
+
+	// Hash files in parallel.
+	for result := range f.hasher.HashFilesWithSizes(toHash) {
+		if result.Error == nil {
+			hashes[result.Path] = result.Hash
+		}
+	}
+
+	return hashes
+}
+
+func (f *Flattener) processFile(file *collector.FileInfo, hash string, seenHash map[string]string, nameCount map[string]int) MoveOperation {
 	op := MoveOperation{
 		OriginalPath: file.Path,
+		Hash:         hash,
 	}
 
 	// Validate source path is within root.
@@ -107,23 +137,26 @@ func (f *Flattener) processFile(file *collector.FileInfo, seen map[fileKey]strin
 		return op
 	}
 
+	// If we couldn't compute hash, skip this file with error.
+	if hash == "" {
+		op.Error = errors.New("could not compute hash for file")
+		return op
+	}
+
 	// Check if already in root directory.
 	if file.Dir == f.rootDir {
 		op.Skipped = true
 		op.SkipReason = "already in root"
 		op.NewPath = file.Path
+		// Still track the hash so duplicates in subdirs are detected.
+		if _, exists := seenHash[hash]; !exists {
+			seenHash[hash] = file.Path
+		}
 		return op
 	}
 
-	// Create key for duplicate detection.
-	key := fileKey{
-		name:  file.Name,
-		size:  file.Size,
-		mtime: file.ModTime.Unix(),
-	}
-
-	// Check if this is a duplicate.
-	if existingPath, exists := seen[key]; exists {
+	// Check if this is a duplicate by content hash.
+	if existingPath, exists := seenHash[hash]; exists {
 		op.Duplicate = true
 		op.NewPath = existingPath // reference to the kept file
 
@@ -153,8 +186,8 @@ func (f *Flattener) processFile(file *collector.FileInfo, seen map[fileKey]strin
 		return op
 	}
 
-	// Mark as seen.
-	seen[key] = op.NewPath
+	// Mark this content hash as seen.
+	seenHash[hash] = op.NewPath
 
 	// Move the file using safe rename.
 	if !f.dryRun {
