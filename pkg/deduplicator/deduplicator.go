@@ -7,23 +7,12 @@
 package deduplicator
 
 import (
-	"crypto/sha256"
-	"encoding/hex"
-	"errors"
 	"fmt"
-	"io"
-	"os"
 	"sort"
 
 	"file-organizer/pkg/collector"
+	"file-organizer/pkg/hasher"
 	"file-organizer/pkg/safepath"
-)
-
-const (
-	// partialHashSize is the number of bytes to read from start and end for partial hash.
-	partialHashSize = 4096
-	// smallFileThreshold - files smaller than this skip partial hash and go straight to full hash.
-	smallFileThreshold = partialHashSize * 2
 )
 
 // DeleteOperation represents a single delete operation.
@@ -53,6 +42,7 @@ type Deduplicator struct {
 	dryRun    bool
 	rootDir   string
 	validator *safepath.Validator
+	hasher    *hasher.Hasher
 }
 
 // New creates a new Deduplicator with path containment validation.
@@ -66,6 +56,7 @@ func New(rootDir string, dryRun bool) (*Deduplicator, error) {
 		rootDir:   rootDir,
 		dryRun:    dryRun,
 		validator: v,
+		hasher:    hasher.New(),
 	}, nil
 }
 
@@ -147,7 +138,7 @@ func (d *Deduplicator) findDuplicatesInSizeGroup(files []collector.FileInfo) []D
 	size := files[0].Size
 
 	// For small files, go straight to full hash.
-	if size <= smallFileThreshold {
+	if size <= hasher.SmallFileThreshold {
 		return d.findDuplicatesByFullHash(files)
 	}
 
@@ -160,7 +151,7 @@ func (d *Deduplicator) findDuplicatesByFullHash(files []collector.FileInfo) []Du
 	hashGroups := make(map[string][]collector.FileInfo)
 
 	for _, f := range files {
-		hash, err := computeFullHash(f.Path)
+		hash, err := d.hasher.ComputeHash(f.Path)
 		if err != nil {
 			continue // Skip files we can't read.
 		}
@@ -177,7 +168,7 @@ func (d *Deduplicator) findDuplicatesByPartialThenFullHash(files []collector.Fil
 	partialGroups := make(map[string][]collector.FileInfo)
 
 	for _, f := range files {
-		hash, err := computePartialHash(f.Path, f.Size)
+		hash, err := d.hasher.ComputePartialHash(f.Path, f.Size)
 		if err != nil {
 			continue
 		}
@@ -223,57 +214,6 @@ func buildDuplicateGroups(hashGroups map[string][]collector.FileInfo) []Duplicat
 	return groups
 }
 
-// computeFullHash computes SHA256 hash of entire file.
-func computeFullHash(path string) (string, error) {
-	f, err := os.Open(path)
-	if err != nil {
-		return "", err
-	}
-	defer f.Close()
-
-	h := sha256.New()
-	if _, err := io.Copy(h, f); err != nil {
-		return "", err
-	}
-
-	return hex.EncodeToString(h.Sum(nil)), nil
-}
-
-// computePartialHash computes hash of first and last partialHashSize bytes.
-// This is much faster than full hash for large files and catches most differences.
-func computePartialHash(path string, size int64) (string, error) {
-	f, err := os.Open(path)
-	if err != nil {
-		return "", err
-	}
-	defer f.Close()
-
-	h := sha256.New()
-
-	// Read first chunk.
-	buf := make([]byte, partialHashSize)
-	n, err := f.Read(buf)
-	if err != nil && !errors.Is(err, io.EOF) {
-		return "", err
-	}
-	h.Write(buf[:n])
-
-	// Read last chunk (if file is large enough to have distinct last chunk).
-	if size > partialHashSize {
-		_, err = f.Seek(-partialHashSize, io.SeekEnd)
-		if err != nil {
-			return "", err
-		}
-		n, err = f.Read(buf)
-		if err != nil && !errors.Is(err, io.EOF) {
-			return "", err
-		}
-		h.Write(buf[:n])
-	}
-
-	return hex.EncodeToString(h.Sum(nil)), nil
-}
-
 // deleteFile creates a delete operation and optionally performs the deletion.
 func (d *Deduplicator) deleteFile(file collector.FileInfo, originalPath, hash string) DeleteOperation {
 	op := DeleteOperation{
@@ -312,5 +252,6 @@ func (d *Deduplicator) Root() string {
 // ComputeFileHash computes and returns the SHA256 hash of a file.
 // Exported for use by callers who need to verify file hashes.
 func ComputeFileHash(path string) (string, error) {
-	return computeFullHash(path)
+	h := hasher.New()
+	return h.ComputeHash(path)
 }

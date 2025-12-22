@@ -11,6 +11,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"file-organizer/pkg/collector"
+	"file-organizer/pkg/hasher"
 )
 
 func setupTestDir(t *testing.T) string {
@@ -672,7 +673,8 @@ func TestComputePartialHash(t *testing.T) {
 	path := filepath.Join(tmpDir, "large.bin")
 	createTestFileBytes(t, path, content, modTime)
 
-	hash, err := computePartialHash(path, int64(size))
+	h := hasher.New()
+	hash, err := h.ComputePartialHash(path, int64(size))
 	require.NoError(t, err)
 	assert.NotEmpty(t, hash)
 	assert.Len(t, hash, 64)
