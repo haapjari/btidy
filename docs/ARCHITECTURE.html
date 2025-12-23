@@ -1,0 +1,229 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>file-organizer Architecture</title>
+    <style>
+      :root {
+        --ink: #1e2a2f;
+        --muted: #4b5b60;
+        --accent: #1b6f76;
+        --accent-soft: #cfe3e4;
+        --paper: #f6f0e8;
+        --paper-dark: #e7dccf;
+        --card: #fffaf4;
+        --line: #d2c4b6;
+      }
+      * { box-sizing: border-box; }
+      body {
+        margin: 0;
+        font-family: Georgia, "Times New Roman", serif;
+        color: var(--ink);
+        background: radial-gradient(circle at 20% 10%, #fff7ef 0, var(--paper) 55%, var(--paper-dark) 100%);
+      }
+      header {
+        padding: 48px 20px 28px;
+        text-align: center;
+      }
+      h1 {
+        font-family: "Trebuchet MS", "Lucida Sans Unicode", sans-serif;
+        font-size: clamp(28px, 4vw, 44px);
+        letter-spacing: 0.02em;
+        margin: 0 0 10px;
+      }
+      h2 {
+        font-family: "Trebuchet MS", "Lucida Sans Unicode", sans-serif;
+        font-size: clamp(20px, 2.6vw, 28px);
+        margin: 26px 0 10px;
+      }
+      p { max-width: 860px; margin: 0 auto 12px; color: var(--muted); }
+      main {
+        max-width: 980px;
+        margin: 0 auto;
+        padding: 0 20px 50px;
+        display: grid;
+        gap: 22px;
+      }
+      section {
+        background: var(--card);
+        border: 1px solid var(--line);
+        border-radius: 16px;
+        padding: 20px 18px;
+        box-shadow: 0 8px 18px rgba(50, 40, 20, 0.08);
+      }
+      .grid {
+        display: grid;
+        gap: 16px;
+      }
+      .grid.two {
+        grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+      }
+      .tag {
+        display: inline-block;
+        padding: 2px 8px;
+        border-radius: 999px;
+        background: var(--accent-soft);
+        color: var(--accent);
+        font-size: 12px;
+        letter-spacing: 0.03em;
+        text-transform: uppercase;
+      }
+      ul { margin: 8px 0 0 18px; color: var(--muted); }
+      li { margin: 6px 0; }
+      .diagram {
+        border: 1px dashed var(--line);
+        border-radius: 12px;
+        padding: 12px;
+        background: #fffdf9;
+      }
+      .legend {
+        font-size: 13px;
+        color: var(--muted);
+        margin-top: 8px;
+      }
+      .chip {
+        display: inline-block;
+        border: 1px solid var(--line);
+        padding: 2px 8px;
+        border-radius: 999px;
+        font-size: 12px;
+        margin-right: 8px;
+        background: #fef7ee;
+      }
+      .flow-step {
+        font-family: "Trebuchet MS", "Lucida Sans Unicode", sans-serif;
+        font-size: 14px;
+        fill: var(--ink);
+      }
+      .flow-box {
+        fill: #f8efe6;
+        stroke: var(--accent);
+        stroke-width: 1.5;
+      }
+      .flow-line {
+        stroke: var(--accent);
+        stroke-width: 1.2;
+        fill: none;
+        marker-end: url(#arrow);
+      }
+      footer {
+        text-align: center;
+        padding: 24px 0 36px;
+        color: var(--muted);
+        font-size: 13px;
+      }
+    </style>
+  </head>
+  <body>
+    <header>
+      <span class="tag">file-organizer</span>
+      <h1>Architecture Map</h1>
+      <p>How the CLI orchestrates file collection, safe mutations, hashing, and reporting.</p>
+    </header>
+    <main>
+      <section>
+        <h2>Entry Points</h2>
+        <div class="grid two">
+          <div>
+            <span class="chip">cmd/main.go</span>
+            <ul>
+              <li>Cobra commands: rename, flatten, duplicate, manifest.</li>
+              <li>Validates input path and prints summaries.</li>
+              <li>Dry-run and verbose flags live here.</li>
+            </ul>
+          </div>
+          <div>
+            <span class="chip">pkg/safepath</span>
+            <ul>
+              <li>Guards all mutating operations.</li>
+              <li>Rejects path or symlink escapes.</li>
+              <li>Used by renamer, flattener, deduplicator.</li>
+            </ul>
+          </div>
+        </div>
+      </section>
+
+      <section>
+        <h2>Component Map</h2>
+        <div class="diagram">
+          <svg viewBox="0 0 800 300" width="100%" height="auto" role="img" aria-label="Component map">
+            <defs>
+              <marker id="arrow" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto">
+                <path d="M0,0 L0,6 L9,3 z" fill="#1b6f76"></path>
+              </marker>
+            </defs>
+            <rect x="20" y="30" width="160" height="56" class="flow-box"></rect>
+            <text x="100" y="62" text-anchor="middle" class="flow-step">cmd/main.go</text>
+
+            <rect x="240" y="30" width="160" height="56" class="flow-box"></rect>
+            <text x="320" y="62" text-anchor="middle" class="flow-step">collector</text>
+
+            <rect x="460" y="10" width="150" height="56" class="flow-box"></rect>
+            <text x="535" y="42" text-anchor="middle" class="flow-step">renamer</text>
+
+            <rect x="460" y="90" width="150" height="56" class="flow-box"></rect>
+            <text x="535" y="122" text-anchor="middle" class="flow-step">flattener</text>
+
+            <rect x="460" y="170" width="150" height="56" class="flow-box"></rect>
+            <text x="535" y="202" text-anchor="middle" class="flow-step">deduplicator</text>
+
+            <rect x="650" y="60" width="130" height="56" class="flow-box"></rect>
+            <text x="715" y="92" text-anchor="middle" class="flow-step">hasher</text>
+
+            <rect x="650" y="150" width="130" height="56" class="flow-box"></rect>
+            <text x="715" y="182" text-anchor="middle" class="flow-step">safepath</text>
+
+            <line x1="180" y1="58" x2="240" y2="58" class="flow-line"></line>
+            <line x1="400" y1="58" x2="460" y2="38" class="flow-line"></line>
+            <line x1="400" y1="58" x2="460" y2="118" class="flow-line"></line>
+            <line x1="400" y1="58" x2="460" y2="198" class="flow-line"></line>
+            <line x1="610" y1="38" x2="650" y2="88" class="flow-line"></line>
+            <line x1="610" y1="118" x2="650" y2="88" class="flow-line"></line>
+            <line x1="610" y1="198" x2="650" y2="178" class="flow-line"></line>
+          </svg>
+          <div class="legend">Collector feeds all phases; hasher and safepath provide shared services.</div>
+        </div>
+      </section>
+
+      <section>
+        <h2>Phase Flows</h2>
+        <div class="diagram">
+          <svg viewBox="0 0 800 220" width="100%" height="auto" role="img" aria-label="Phase flow">
+            <defs>
+              <marker id="arrow2" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto">
+                <path d="M0,0 L0,6 L9,3 z" fill="#1b6f76"></path>
+              </marker>
+            </defs>
+            <rect x="20" y="30" width="180" height="56" class="flow-box"></rect>
+            <text x="110" y="62" text-anchor="middle" class="flow-step">Collect</text>
+            <rect x="240" y="30" width="180" height="56" class="flow-box"></rect>
+            <text x="330" y="62" text-anchor="middle" class="flow-step">Rename</text>
+            <rect x="460" y="30" width="180" height="56" class="flow-box"></rect>
+            <text x="550" y="62" text-anchor="middle" class="flow-step">Flatten</text>
+            <rect x="240" y="120" width="180" height="56" class="flow-box"></rect>
+            <text x="330" y="152" text-anchor="middle" class="flow-step">Duplicate</text>
+            <rect x="460" y="120" width="180" height="56" class="flow-box"></rect>
+            <text x="550" y="152" text-anchor="middle" class="flow-step">Manifest</text>
+
+            <line x1="200" y1="58" x2="240" y2="58" class="flow-line" marker-end="url(#arrow2)"></line>
+            <line x1="420" y1="58" x2="460" y2="58" class="flow-line" marker-end="url(#arrow2)"></line>
+            <line x1="330" y1="86" x2="330" y2="120" class="flow-line" marker-end="url(#arrow2)"></line>
+            <line x1="550" y1="86" x2="550" y2="120" class="flow-line" marker-end="url(#arrow2)"></line>
+          </svg>
+          <div class="legend">Typical order: rename, flatten, duplicate. Manifest can be run before and after.</div>
+        </div>
+      </section>
+
+      <section>
+        <h2>Shared Rules</h2>
+        <ul>
+          <li>All mutations are validated by safepath to prevent escaping root.</li>
+          <li>Hashing uses a worker pool configured by the CLI.</li>
+          <li>Dry-run prints planned changes without mutating the filesystem.</li>
+        </ul>
+      </section>
+    </main>
+    <footer>Generated to provide a study map for the repo.</footer>
+  </body>
+</html>
