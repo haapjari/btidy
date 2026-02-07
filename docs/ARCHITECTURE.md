@@ -131,7 +131,7 @@ sequenceDiagram
   U->>C: Collect(root)
   C-->>U: []FileInfo
   U->>D: FindDuplicates(files)
-  D->>H: ComputePartialHash/ComputeHash
+  D->>H: HashPartialFilesWithSizes/HashFilesWithSizes
   D->>P: SafeRemove
   D-->>U: Result(ops)
   U-->>CLI: DuplicateExecution
@@ -179,7 +179,8 @@ Key behavior:
 ## Concurrency model
 
 Hashing uses `pkg/hasher` with a worker pool (`workers` flag, default CPU count).
-Both flattener and manifest use the concurrent hashing API.
+Manifest, flattener, and deduplicator use the concurrent hashing APIs for
+full and partial hashing.
 
 ## Extension points
 

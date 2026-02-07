@@ -75,6 +75,11 @@ This is the most reliable approach - files are only considered duplicates if the
 
 # Verbose output
 ./file-organizer duplicate -v --dry-run /path/to/backup
+
+# Control parallel hashing workers
+./file-organizer manifest --workers 8 /path/to/backup -o manifest.json
+./file-organizer flatten --workers 8 /path/to/backup
+./file-organizer duplicate --workers 8 /path/to/backup
 ```
 
 ## Typical Workflow

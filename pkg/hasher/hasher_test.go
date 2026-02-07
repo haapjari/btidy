@@ -276,6 +276,46 @@ func TestHasher_HashFilesWithSizes(t *testing.T) {
 	assert.Equal(t, 2, count)
 }
 
+func TestHasher_HashPartialFilesWithSizes(t *testing.T) {
+	t.Parallel()
+
+	tmpDir := t.TempDir()
+
+	files := []struct {
+		name    string
+		content string
+	}{
+		{"small.txt", "small content"},
+		{"large.bin", string(make([]byte, PartialHashSize*3))},
+	}
+
+	h := New()
+	toHash := make([]FileToHash, 0, len(files))
+	expected := make(map[string]string, len(files))
+
+	for _, f := range files {
+		path := createTestFile(t, tmpDir, f.name, f.content)
+		toHash = append(toHash, FileToHash{
+			Path: path,
+			Size: int64(len(f.content)),
+		})
+
+		hash, err := h.ComputePartialHash(path, int64(len(f.content)))
+		require.NoError(t, err)
+		expected[path] = hash
+	}
+
+	results := h.HashPartialFilesWithSizes(toHash)
+
+	got := make(map[string]string)
+	for result := range results {
+		require.NoError(t, result.Error)
+		got[result.Path] = result.Hash
+	}
+
+	assert.Equal(t, expected, got)
+}
+
 func TestHasher_HashFiles_Parallel_Correctness(t *testing.T) {
 	t.Parallel()
 

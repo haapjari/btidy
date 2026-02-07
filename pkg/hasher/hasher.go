@@ -204,6 +204,44 @@ func (h *Hasher) HashFilesWithSizes(files []FileToHash) <-chan HashResult {
 	return results
 }
 
+// HashPartialFilesWithSizes computes partial hashes for files with known sizes.
+// This allows parallel pre-filtering for large file comparisons.
+func (h *Hasher) HashPartialFilesWithSizes(files []FileToHash) <-chan HashResult {
+	results := make(chan HashResult, h.workers)
+
+	go func() {
+		defer close(results)
+
+		work := make(chan FileToHash, h.workers)
+
+		var wg sync.WaitGroup
+		for range h.workers {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				for file := range work {
+					hash, err := h.ComputePartialHash(file.Path, file.Size)
+					results <- HashResult{
+						Path:  file.Path,
+						Hash:  hash,
+						Size:  file.Size,
+						Error: err,
+					}
+				}
+			}()
+		}
+
+		for _, file := range files {
+			work <- file
+		}
+		close(work)
+
+		wg.Wait()
+	}()
+
+	return results
+}
+
 // Workers returns the number of worker goroutines configured.
 func (h *Hasher) Workers() int {
 	return h.workers

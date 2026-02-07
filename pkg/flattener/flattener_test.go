@@ -283,7 +283,7 @@ func TestFlattener_DryRun(t *testing.T) {
 	require.NoError(t, err)
 	assert.True(t, f.DryRun())
 
-	f, err = New(tmpDir, false)
+	f, err = NewWithWorkers(tmpDir, false, 4)
 	require.NoError(t, err)
 	assert.False(t, f.DryRun())
 }
@@ -328,12 +328,12 @@ func TestFlattener_FlattenFiles_DeepNesting(t *testing.T) {
 func TestFlattener_Root(t *testing.T) {
 	tmpDir := t.TempDir()
 
-	f, err := New(tmpDir, false)
+	f, err := NewWithWorkers(tmpDir, false, 2)
 	require.NoError(t, err)
 	assert.Equal(t, tmpDir, f.Root())
 }
 
 func TestNew_InvalidRoot(t *testing.T) {
-	_, err := New("/nonexistent/path/12345", false)
+	_, err := NewWithWorkers("/nonexistent/path/12345", false, 2)
 	assert.Error(t, err)
 }

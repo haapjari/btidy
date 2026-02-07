@@ -47,6 +47,7 @@ func runFlatten(_ *cobra.Command, args []string) error {
 	execution, err := newUseCaseService().RunFlatten(usecase.FlattenRequest{
 		TargetDir: args[0],
 		DryRun:    dryRun,
+		Workers:   workers,
 	})
 	progress.Stop()
 	if err != nil {
@@ -54,6 +55,7 @@ func runFlatten(_ *cobra.Command, args []string) error {
 	}
 
 	printCommandHeader("FLATTEN", execution.RootDir)
+	fmt.Printf("Workers: %d\n", workers)
 	printFoundFiles(execution.FileCount, execution.CollectDuration, true)
 
 	if execution.FileCount == 0 {

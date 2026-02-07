@@ -41,6 +41,7 @@ func runDuplicate(_ *cobra.Command, args []string) error {
 	execution, err := newUseCaseService().RunDuplicate(usecase.DuplicateRequest{
 		TargetDir: args[0],
 		DryRun:    dryRun,
+		Workers:   workers,
 	})
 	progress.Stop()
 	if err != nil {
@@ -48,6 +49,7 @@ func runDuplicate(_ *cobra.Command, args []string) error {
 	}
 
 	printCommandHeader("DUPLICATE", execution.RootDir)
+	fmt.Printf("Workers: %d\n", workers)
 	printFoundFiles(execution.FileCount, execution.CollectDuration, false)
 
 	if execution.FileCount == 0 {

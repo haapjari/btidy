@@ -47,6 +47,11 @@ type Deduplicator struct {
 
 // New creates a new Deduplicator with path containment validation.
 func New(rootDir string, dryRun bool) (*Deduplicator, error) {
+	return NewWithWorkers(rootDir, dryRun, 0)
+}
+
+// NewWithWorkers creates a new Deduplicator with custom worker count.
+func NewWithWorkers(rootDir string, dryRun bool, workers int) (*Deduplicator, error) {
 	v, err := safepath.New(rootDir)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create path validator: %w", err)
@@ -56,7 +61,7 @@ func New(rootDir string, dryRun bool) (*Deduplicator, error) {
 		rootDir:   rootDir,
 		dryRun:    dryRun,
 		validator: v,
-		hasher:    hasher.New(),
+		hasher:    hasher.New(hasher.WithWorkers(workers)),
 	}, nil
 }
 
@@ -149,13 +154,26 @@ func (d *Deduplicator) findDuplicatesInSizeGroup(files []collector.FileInfo) []D
 // findDuplicatesByFullHash groups files by their full SHA256 hash.
 func (d *Deduplicator) findDuplicatesByFullHash(files []collector.FileInfo) []DuplicateGroup {
 	hashGroups := make(map[string][]collector.FileInfo)
+	toHash := make([]hasher.FileToHash, 0, len(files))
+	fileByPath := make(map[string]collector.FileInfo, len(files))
 
 	for _, f := range files {
-		hash, err := d.hasher.ComputeHash(f.Path)
-		if err != nil {
-			continue // Skip files we can't read.
+		fileByPath[f.Path] = f
+		toHash = append(toHash, hasher.FileToHash{
+			Path: f.Path,
+			Size: f.Size,
+		})
+	}
+
+	for result := range d.hasher.HashFilesWithSizes(toHash) {
+		if result.Error != nil {
+			continue
 		}
-		hashGroups[hash] = append(hashGroups[hash], f)
+		file, ok := fileByPath[result.Path]
+		if !ok {
+			continue
+		}
+		hashGroups[result.Hash] = append(hashGroups[result.Hash], file)
 	}
 
 	return buildDuplicateGroups(hashGroups)
@@ -166,13 +184,26 @@ func (d *Deduplicator) findDuplicatesByFullHash(files []collector.FileInfo) []Du
 func (d *Deduplicator) findDuplicatesByPartialThenFullHash(files []collector.FileInfo) []DuplicateGroup {
 	// First pass: group by partial hash.
 	partialGroups := make(map[string][]collector.FileInfo)
+	toHash := make([]hasher.FileToHash, 0, len(files))
+	fileByPath := make(map[string]collector.FileInfo, len(files))
 
 	for _, f := range files {
-		hash, err := d.hasher.ComputePartialHash(f.Path, f.Size)
-		if err != nil {
+		fileByPath[f.Path] = f
+		toHash = append(toHash, hasher.FileToHash{
+			Path: f.Path,
+			Size: f.Size,
+		})
+	}
+
+	for result := range d.hasher.HashPartialFilesWithSizes(toHash) {
+		if result.Error != nil {
 			continue
 		}
-		partialGroups[hash] = append(partialGroups[hash], f)
+		file, ok := fileByPath[result.Path]
+		if !ok {
+			continue
+		}
+		partialGroups[result.Hash] = append(partialGroups[result.Hash], file)
 	}
 
 	// Second pass: for groups with multiple files, confirm with full hash.

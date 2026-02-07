@@ -61,6 +61,7 @@ func TestService_RunFlatten_DryRun(t *testing.T) {
 	execution, err := s.RunFlatten(FlattenRequest{
 		TargetDir: tmpDir,
 		DryRun:    true,
+		Workers:   3,
 	})
 	require.NoError(t, err)
 
@@ -89,6 +90,7 @@ func TestService_RunDuplicate_DryRun(t *testing.T) {
 	execution, err := s.RunDuplicate(DuplicateRequest{
 		TargetDir: tmpDir,
 		DryRun:    true,
+		Workers:   3,
 	})
 	require.NoError(t, err)
 

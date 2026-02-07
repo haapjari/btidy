@@ -44,6 +44,11 @@ type Flattener struct {
 
 // New creates a new Flattener with path containment validation.
 func New(rootDir string, dryRun bool) (*Flattener, error) {
+	return NewWithWorkers(rootDir, dryRun, 0)
+}
+
+// NewWithWorkers creates a new Flattener with custom worker count.
+func NewWithWorkers(rootDir string, dryRun bool, workers int) (*Flattener, error) {
 	v, err := safepath.New(rootDir)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create path validator: %w", err)
@@ -53,7 +58,7 @@ func New(rootDir string, dryRun bool) (*Flattener, error) {
 		rootDir:   rootDir,
 		dryRun:    dryRun,
 		validator: v,
-		hasher:    hasher.New(),
+		hasher:    hasher.New(hasher.WithWorkers(workers)),
 	}, nil
 }
 

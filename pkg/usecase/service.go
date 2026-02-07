@@ -49,6 +49,7 @@ type RenameExecution struct {
 type FlattenRequest struct {
 	TargetDir string
 	DryRun    bool
+	Workers   int
 }
 
 // FlattenExecution contains flatten workflow outputs.
@@ -63,6 +64,7 @@ type FlattenExecution struct {
 type DuplicateRequest struct {
 	TargetDir string
 	DryRun    bool
+	Workers   int
 }
 
 // DuplicateExecution contains duplicate workflow outputs.
@@ -102,7 +104,7 @@ func (s *Service) RunRename(req RenameRequest) (RenameExecution, error) {
 
 // RunFlatten executes the flatten workflow.
 func (s *Service) RunFlatten(req FlattenRequest) (FlattenExecution, error) {
-	workflowResult, err := runFileWorkflow(s, req.TargetDir, flattenExecutor(req.DryRun))
+	workflowResult, err := runFileWorkflow(s, req.TargetDir, flattenExecutor(req.DryRun, req.Workers))
 	if err != nil {
 		return FlattenExecution{}, err
 	}
@@ -112,7 +114,7 @@ func (s *Service) RunFlatten(req FlattenRequest) (FlattenExecution, error) {
 
 // RunDuplicate executes the duplicate workflow.
 func (s *Service) RunDuplicate(req DuplicateRequest) (DuplicateExecution, error) {
-	workflowResult, err := runFileWorkflow(s, req.TargetDir, duplicateExecutor(req.DryRun))
+	workflowResult, err := runFileWorkflow(s, req.TargetDir, duplicateExecutor(req.DryRun, req.Workers))
 	if err != nil {
 		return DuplicateExecution{}, err
 	}
@@ -218,9 +220,9 @@ func renameExecutor(dryRun bool) func(rootDir string, files []collector.FileInfo
 	}
 }
 
-func flattenExecutor(dryRun bool) func(rootDir string, files []collector.FileInfo) (flattener.Result, error) {
+func flattenExecutor(dryRun bool, workers int) func(rootDir string, files []collector.FileInfo) (flattener.Result, error) {
 	return func(rootDir string, files []collector.FileInfo) (flattener.Result, error) {
-		f, err := flattener.New(rootDir, dryRun)
+		f, err := flattener.NewWithWorkers(rootDir, dryRun, workers)
 		if err != nil {
 			return flattener.Result{}, fmt.Errorf("failed to create flattener: %w", err)
 		}
@@ -229,9 +231,9 @@ func flattenExecutor(dryRun bool) func(rootDir string, files []collector.FileInf
 	}
 }
 
-func duplicateExecutor(dryRun bool) func(rootDir string, files []collector.FileInfo) (deduplicator.Result, error) {
+func duplicateExecutor(dryRun bool, workers int) func(rootDir string, files []collector.FileInfo) (deduplicator.Result, error) {
 	return func(rootDir string, files []collector.FileInfo) (deduplicator.Result, error) {
-		d, err := deduplicator.New(rootDir, dryRun)
+		d, err := deduplicator.NewWithWorkers(rootDir, dryRun, workers)
 		if err != nil {
 			return deduplicator.Result{}, fmt.Errorf("failed to create deduplicator: %w", err)
 		}

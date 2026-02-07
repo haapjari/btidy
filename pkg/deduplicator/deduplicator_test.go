@@ -324,7 +324,7 @@ func TestDeduplicator_DryRun(t *testing.T) {
 	require.NoError(t, err)
 	assert.True(t, d.DryRun())
 
-	d, err = New(tmpDir, false)
+	d, err = NewWithWorkers(tmpDir, false, 2)
 	require.NoError(t, err)
 	assert.False(t, d.DryRun())
 }
@@ -333,14 +333,14 @@ func TestDeduplicator_DryRun(t *testing.T) {
 func TestDeduplicator_Root(t *testing.T) {
 	tmpDir := t.TempDir()
 
-	d, err := New(tmpDir, false)
+	d, err := NewWithWorkers(tmpDir, false, 2)
 	require.NoError(t, err)
 	assert.Equal(t, tmpDir, d.Root())
 }
 
 // Test New with invalid root.
 func TestNew_InvalidRoot(t *testing.T) {
-	_, err := New("/nonexistent/path/12345", false)
+	_, err := NewWithWorkers("/nonexistent/path/12345", false, 2)
 	assert.Error(t, err)
 }
 
