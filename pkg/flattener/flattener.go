@@ -7,9 +7,9 @@ import (
 	"os"
 	"path/filepath"
 
-	"file-organizer/pkg/collector"
-	"file-organizer/pkg/hasher"
-	"file-organizer/pkg/safepath"
+	"btidy/pkg/collector"
+	"btidy/pkg/hasher"
+	"btidy/pkg/safepath"
 )
 
 // MoveOperation represents a single move operation.

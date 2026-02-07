@@ -10,9 +10,9 @@ import (
 	"fmt"
 	"sort"
 
-	"file-organizer/pkg/collector"
-	"file-organizer/pkg/hasher"
-	"file-organizer/pkg/safepath"
+	"btidy/pkg/collector"
+	"btidy/pkg/hasher"
+	"btidy/pkg/safepath"
 )
 
 // DeleteOperation represents a single delete operation.

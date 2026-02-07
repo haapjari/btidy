@@ -1,7 +1,7 @@
 # AGENTS.md
 
 ## Purpose
-- This file is the operating guide for coding agents working in `file-organizer`.
+- This file is the operating guide for coding agents working in `btidy`.
 - Follow existing repository patterns first; do not introduce new frameworks or workflow styles unless requested.
 - Prefer minimal, safe changes that preserve CLI behavior and path-containment guarantees.
 
@@ -13,7 +13,7 @@
 
 ## Project Snapshot
 - Language: Go (`go 1.25.4` in `go.mod`).
-- Module path: `file-organizer`.
+- Module path: `btidy`.
 - CLI entrypoint: `cmd/main.go` (Cobra-based command wiring).
 - Core packages live under `pkg/`.
 - High-level architecture reference: `docs/ARCHITECTURE.md`.
@@ -45,10 +45,10 @@
 
 ## Useful Direct Invocations
 - Run CLI without building: `go run ./cmd --help`
-- Build directly with Go: `go build -o file-organizer ./cmd`
+- Build directly with Go: `go build -o btidy ./cmd`
 - Run vet directly: `go vet ./pkg/...`
 - Run linter directly (after `make tools`): `.tools/golangci-lint run --timeout 5m`
-- Format a specific file quickly: `gofmt -w -s <file> && .tools/goimports -w -local file-organizer <file>`
+- Format a specific file quickly: `gofmt -w -s <file> && .tools/goimports -w -local btidy <file>`
 
 ## Single-Test and Focused Test Commands
 - Run one package: `go test ./pkg/renamer -count=1`
@@ -63,7 +63,7 @@
 ## Lint and Formatting Expectations
 - Linter: `golangci-lint` (configured in `.golangci.yml`, version pinned in `Makefile`).
 - Formatting is enforced by both `gofmt` and `goimports`.
-- Local import prefix is `file-organizer` (configured via `goimports -local file-organizer`).
+- Local import prefix is `btidy` (configured via `goimports -local btidy`).
 - Do not hand-format; run `make fmt` after edits.
 - Keep functions reasonably small (`funlen` enforced; tests are more permissive).
 - Keep cyclomatic/cognitive complexity under configured thresholds.
@@ -72,7 +72,7 @@
 - Use grouped imports in standard Go order:
 - 1) standard library,
 - 2) third-party modules,
-- 3) local module imports (`file-organizer/...`).
+- 3) local module imports (`btidy/...`).
 - Let `goimports` handle grouping and ordering.
 - Avoid unused imports (strictly linted).
 - Dot imports are disallowed by linter configuration.

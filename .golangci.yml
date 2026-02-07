@@ -119,7 +119,7 @@ linters-settings:
       - G304
       - G306
   goimports:
-    local-prefixes: file-organizer
+    local-prefixes: btidy
   nestif:
     min-complexity: 4
   maintidx:

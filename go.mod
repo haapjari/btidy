@@ -1,4 +1,4 @@
-module file-organizer
+module btidy
 
 go 1.25.4
 

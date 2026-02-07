@@ -5,7 +5,7 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"file-organizer/pkg/usecase"
+	"btidy/pkg/usecase"
 )
 
 func buildRenameCommand() *cobra.Command {
@@ -19,9 +19,9 @@ func buildRenameCommand() *cobra.Command {
   - Converts Finnish characters (ä→a, ö→o, å→a)
 
 Examples:
-  file-organizer rename --dry-run ./backup    # Preview changes
-  file-organizer rename ./backup              # Apply changes
-  file-organizer rename -v ./backup           # Verbose output
+  btidy rename --dry-run ./backup    # Preview changes
+  btidy rename ./backup              # Apply changes
+  btidy rename -v ./backup           # Verbose output
 
 Before: "My Document.pdf" (modified 2018-06-15)
 After:  "2018-06-15_my_document.pdf"`,

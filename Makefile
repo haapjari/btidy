@@ -1,7 +1,7 @@
 .PHONY: all build test test-race test-cover clean lint fmt vet check pre-commit tools help
 
 # Binary name
-BINARY := file-organizer
+BINARY := btidy
 
 # Go parameters
 GO := go
@@ -99,7 +99,7 @@ lint: $(GOLANGCI_LINT)
 fmt: $(GOIMPORTS)
 	@echo "Formatting code..."
 	$(GOFMT) -w -s $(ALL_GO_FILES)
-	$(GOIMPORTS) -w -local file-organizer $(ALL_GO_FILES)
+	$(GOIMPORTS) -w -local btidy $(ALL_GO_FILES)
 
 # Vet
 vet:

@@ -1,9 +1,9 @@
 #!/bin/bash
-# Create a comprehensive test directory structure for testing file-organizer
+# Create a comprehensive test directory structure for testing btidy
 
 set -e
 
-TEST_DIR="${1:-/tmp/file-organizer-test}"
+TEST_DIR="${1:-/tmp/btidy-test}"
 
 echo "Creating test structure in: $TEST_DIR"
 

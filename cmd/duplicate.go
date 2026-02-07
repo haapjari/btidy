@@ -5,8 +5,8 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"file-organizer/pkg/deduplicator"
-	"file-organizer/pkg/usecase"
+	"btidy/pkg/deduplicator"
+	"btidy/pkg/usecase"
 )
 
 func buildDuplicateCommand() *cobra.Command {
@@ -23,9 +23,9 @@ This is safe and reliable - files are only considered duplicates
 if their content is byte-for-byte identical (verified by SHA256).
 
 Examples:
-  file-organizer duplicate --dry-run ./backup   # Preview (recommended!)
-  file-organizer duplicate ./backup             # Apply changes
-  file-organizer duplicate -v ./backup          # Verbose output
+  btidy duplicate --dry-run ./backup   # Preview (recommended!)
+  btidy duplicate ./backup             # Apply changes
+  btidy duplicate -v ./backup          # Verbose output
 
 Use --dry-run first to review what would be deleted!`,
 		Args: cobra.ExactArgs(1),

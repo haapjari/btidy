@@ -14,9 +14,9 @@ var (
 
 func buildRootCommand() *cobra.Command {
 	cmd := &cobra.Command{
-		Use:   "file-organizer",
+		Use:   "btidy",
 		Short: "Organize backup files by renaming and flattening directory structures",
-		Long: `file-organizer helps clean up backup directories.
+		Long: `btidy helps clean up backup directories.
 
 Commands:
   rename     Renames files in place with consistent naming
@@ -26,26 +26,26 @@ Commands:
 
 Examples:
   # Preview what rename would do (recommended first step)
-  file-organizer rename --dry-run /path/to/backup/2018
+	  btidy rename --dry-run /path/to/backup/2018
 
   # Actually rename files
-  file-organizer rename /path/to/backup/2018
+	  btidy rename /path/to/backup/2018
 
   # Preview flatten operation
-  file-organizer flatten --dry-run /path/to/backup/2018
+	  btidy flatten --dry-run /path/to/backup/2018
 
   # Flatten directory structure (move all to root, remove duplicates by content hash)
-  file-organizer flatten /path/to/backup/2018
+	  btidy flatten /path/to/backup/2018
 
   # Typical workflow: first rename, then flatten, then deduplicate
-  file-organizer rename /path/to/backup/2018
-  file-organizer flatten /path/to/backup/2018
-  file-organizer duplicate /path/to/backup/2018
+	  btidy rename /path/to/backup/2018
+	  btidy flatten /path/to/backup/2018
+	  btidy duplicate /path/to/backup/2018
 
   # Safe workflow with verification
-  file-organizer manifest /backup -o before.json
-  file-organizer flatten /backup
-  file-organizer manifest /backup -o after.json
+	  btidy manifest /backup -o before.json
+	  btidy flatten /backup
+	  btidy manifest /backup -o after.json
   # compare hashes between manifests
 
 Safety:

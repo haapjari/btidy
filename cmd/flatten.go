@@ -5,8 +5,8 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"file-organizer/pkg/flattener"
-	"file-organizer/pkg/usecase"
+	"btidy/pkg/flattener"
+	"btidy/pkg/usecase"
 )
 
 func buildFlattenCommand() *cobra.Command {
@@ -19,9 +19,9 @@ func buildFlattenCommand() *cobra.Command {
   - Deletes empty directories
 
 Examples:
-  file-organizer flatten --dry-run ./backup   # Preview changes
-  file-organizer flatten ./backup             # Apply changes
-  file-organizer flatten -v ./backup          # Verbose output
+  btidy flatten --dry-run ./backup   # Preview changes
+  btidy flatten ./backup             # Apply changes
+  btidy flatten -v ./backup          # Verbose output
 
 Before:
   backup/

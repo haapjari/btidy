@@ -6,7 +6,7 @@ import (
 	"sync"
 	"time"
 
-	"file-organizer/pkg/usecase"
+	"btidy/pkg/usecase"
 )
 
 var defaultSkipFiles = []string{".DS_Store", "Thumbs.db", "organizer.log"}

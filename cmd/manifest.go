@@ -6,7 +6,7 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"file-organizer/pkg/usecase"
+	"btidy/pkg/usecase"
 )
 
 func buildManifestCommand() *cobra.Command {
@@ -23,14 +23,14 @@ The manifest can be used to:
   - Detect changes or corruption
 
 Examples:
-  file-organizer manifest ./backup -o inventory.json
-  file-organizer manifest /path/to/photos -o before.json
-  file-organizer manifest --workers 8 ./backup -o manifest.json
+  btidy manifest ./backup -o inventory.json
+  btidy manifest /path/to/photos -o before.json
+  btidy manifest --workers 8 ./backup -o manifest.json
 
 Typical safe workflow:
-  1. file-organizer manifest /backup -o before.json
-  2. file-organizer flatten /backup
-  3. file-organizer manifest /backup -o after.json
+  1. btidy manifest /backup -o before.json
+  2. btidy flatten /backup
+  3. btidy manifest /backup -o after.json
   4. compare hashes between manifests`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(_ *cobra.Command, args []string) error {

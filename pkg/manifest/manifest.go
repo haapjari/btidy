@@ -11,8 +11,8 @@ import (
 	"sort"
 	"time"
 
-	"file-organizer/pkg/collector"
-	"file-organizer/pkg/hasher"
+	"btidy/pkg/collector"
+	"btidy/pkg/hasher"
 )
 
 // ManifestEntry represents a single file in the manifest.

@@ -1,4 +1,10 @@
-# File Organizer Enhancement - Implementation Status
+# btidy Enhancement - Implementation Status
+
+- Update Docs
+- Draw Pictures
+- Clean Git History
+- Rename to "btidy" (in progress)
+- Refactor to "urfave/cli"
 
 ## Goal
 
@@ -71,7 +77,7 @@
 
 - **Status**: DONE
 - **Files modified**: `cmd/main.go`
-- **Usage**: `file-organizer manifest [path] -o manifest.json`
+- **Usage**: `btidy manifest [path] -o manifest.json`
 - **Flags**:
   - `-o, --output` - Output path (default: manifest.json)
   - `--workers` - Number of parallel workers
@@ -146,7 +152,7 @@ Run `make check` to verify the fix passes all tests.
 ### 9. Integrate --log flag into commands
 - **Files**: `cmd/main.go`
 - **Commands**: flatten, duplicate, rename, (future: merge)
-- **Usage**: `file-organizer flatten --log operations.jsonl /path`
+- **Usage**: `btidy flatten --log operations.jsonl /path`
 
 ### 10. Create verify logic in pkg/manifest
 - **File to create**: `pkg/manifest/verify.go`
@@ -158,7 +164,7 @@ Run `make check` to verify the fix passes all tests.
 
 ### 11. Add verify command to CLI
 - **File**: `cmd/main.go`
-- **Usage**: `file-organizer verify --manifest before.json /path`
+- **Usage**: `btidy verify --manifest before.json /path`
 - **Exit codes**: 0 = all content preserved, 1 = DATA LOSS DETECTED
 
 ### 12. Create pkg/archive for zip extraction
@@ -194,7 +200,7 @@ Run `make check` to verify the fix passes all tests.
 
 ### 15. Add merge command to CLI
 - **File**: `cmd/main.go`
-- **Usage**: `file-organizer merge [source1] [source2] [target]`
+- **Usage**: `btidy merge [source1] [source2] [target]`
 - **Flags**: `--dry-run`, `--log`, `--workers`, `-v`
 
 ### 16. Update README with examples for all commands
@@ -230,33 +236,33 @@ Run `make check` to verify the fix passes all tests.
 
 ### Current Commands (working)
 ```bash
-file-organizer rename --dry-run /path      # Rename with date prefix
-file-organizer flatten --dry-run /path     # Flatten directories (NEEDS BUG FIX)
-file-organizer duplicate --dry-run /path   # Remove duplicates by hash
-file-organizer manifest /path -o out.json  # Create file inventory
+btidy rename --dry-run /path      # Rename with date prefix
+btidy flatten --dry-run /path     # Flatten directories (NEEDS BUG FIX)
+btidy duplicate --dry-run /path   # Remove duplicates by hash
+btidy manifest /path -o out.json  # Create file inventory
 ```
 
 ### Planned Commands
 ```bash
-file-organizer verify --manifest before.json /path  # Verify no data loss
-file-organizer merge /source1 /source2 /target      # Merge directories
+btidy verify --manifest before.json /path  # Verify no data loss
+btidy merge /source1 /source2 /target      # Merge directories
 ```
 
 ### Safe Workflow (after all features complete)
 ```bash
 # 1. Create manifest before any operations
-file-organizer manifest /backup -o before.json
+btidy manifest /backup -o before.json
 
 # 2. Preview operations
-file-organizer flatten --dry-run /backup
-file-organizer duplicate --dry-run /backup
+btidy flatten --dry-run /backup
+btidy duplicate --dry-run /backup
 
 # 3. Apply with logging
-file-organizer flatten --log operations.jsonl /backup
-file-organizer duplicate --log operations.jsonl /backup
+btidy flatten --log operations.jsonl /backup
+btidy duplicate --log operations.jsonl /backup
 
 # 4. Verify no data was lost
-file-organizer verify --manifest before.json /backup
+btidy verify --manifest before.json /backup
 ```
 
 ---
@@ -270,5 +276,4 @@ file-organizer verify --manifest before.json /backup
 - **Memory efficiency**: Stream-based processing via channels
 
 ---
-
 

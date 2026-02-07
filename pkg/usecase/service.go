@@ -7,11 +7,11 @@ import (
 	"path/filepath"
 	"time"
 
-	"file-organizer/pkg/collector"
-	"file-organizer/pkg/deduplicator"
-	"file-organizer/pkg/flattener"
-	"file-organizer/pkg/manifest"
-	"file-organizer/pkg/renamer"
+	"btidy/pkg/collector"
+	"btidy/pkg/deduplicator"
+	"btidy/pkg/flattener"
+	"btidy/pkg/manifest"
+	"btidy/pkg/renamer"
 )
 
 // Options configures a Service.

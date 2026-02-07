@@ -8,10 +8,10 @@ import (
 	"path/filepath"
 	"regexp"
 
-	"file-organizer/pkg/collector"
-	"file-organizer/pkg/hasher"
-	"file-organizer/pkg/safepath"
-	"file-organizer/pkg/sanitizer"
+	"btidy/pkg/collector"
+	"btidy/pkg/hasher"
+	"btidy/pkg/safepath"
+	"btidy/pkg/sanitizer"
 )
 
 // RenameOperation represents a single rename operation.

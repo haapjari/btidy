@@ -8,7 +8,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"file-organizer/pkg/safepath"
+	"btidy/pkg/safepath"
 )
 
 // TestContainment_ParentDirectoryProtection verifies that parent directories
