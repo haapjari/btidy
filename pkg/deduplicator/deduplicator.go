@@ -41,7 +41,6 @@ type Result struct {
 // Deduplicator identifies and removes duplicate files using content hashing.
 type Deduplicator struct {
 	dryRun    bool
-	rootDir   string
 	validator *safepath.Validator
 	hasher    *hasher.Hasher
 }
@@ -68,7 +67,6 @@ func NewWithValidator(validator *safepath.Validator, dryRun bool, workers int) (
 	}
 
 	return &Deduplicator{
-		rootDir:   validator.Root(),
 		dryRun:    dryRun,
 		validator: validator,
 		hasher:    hasher.New(hasher.WithWorkers(workers)),
@@ -199,58 +197,13 @@ func (d *Deduplicator) findDuplicatesInSizeGroup(files []collector.FileInfo) []D
 
 // findDuplicatesByFullHash groups files by their full SHA256 hash.
 func (d *Deduplicator) findDuplicatesByFullHash(files []collector.FileInfo) []DuplicateGroup {
-	hashGroups := make(map[string][]collector.FileInfo)
-	toHash := make([]hasher.FileToHash, 0, len(files))
-	fileByPath := make(map[string]collector.FileInfo, len(files))
-
-	for _, f := range files {
-		fileByPath[f.Path] = f
-		toHash = append(toHash, hasher.FileToHash{
-			Path: f.Path,
-			Size: f.Size,
-		})
-	}
-
-	for result := range d.hasher.HashFilesWithSizes(toHash) {
-		if result.Error != nil {
-			continue
-		}
-		file, ok := fileByPath[result.Path]
-		if !ok {
-			continue
-		}
-		hashGroups[result.Hash] = append(hashGroups[result.Hash], file)
-	}
-
-	return buildDuplicateGroups(hashGroups)
+	return buildDuplicateGroups(d.groupFilesByHash(files, d.hasher.HashFilesWithSizes))
 }
 
 // findDuplicatesByPartialThenFullHash uses partial hash for initial grouping,
 // then confirms with full hash.
 func (d *Deduplicator) findDuplicatesByPartialThenFullHash(files []collector.FileInfo) []DuplicateGroup {
-	// First pass: group by partial hash.
-	partialGroups := make(map[string][]collector.FileInfo)
-	toHash := make([]hasher.FileToHash, 0, len(files))
-	fileByPath := make(map[string]collector.FileInfo, len(files))
-
-	for _, f := range files {
-		fileByPath[f.Path] = f
-		toHash = append(toHash, hasher.FileToHash{
-			Path: f.Path,
-			Size: f.Size,
-		})
-	}
-
-	for result := range d.hasher.HashPartialFilesWithSizes(toHash) {
-		if result.Error != nil {
-			continue
-		}
-		file, ok := fileByPath[result.Path]
-		if !ok {
-			continue
-		}
-		partialGroups[result.Hash] = append(partialGroups[result.Hash], file)
-	}
+	partialGroups := d.groupFilesByHash(files, d.hasher.HashPartialFilesWithSizes)
 
 	// Second pass: for groups with multiple files, confirm with full hash.
 	var result []DuplicateGroup
@@ -264,6 +217,33 @@ func (d *Deduplicator) findDuplicatesByPartialThenFullHash(files []collector.Fil
 	}
 
 	return result
+}
+
+func (d *Deduplicator) groupFilesByHash(files []collector.FileInfo, hashFn func([]hasher.FileToHash) <-chan hasher.HashResult) map[string][]collector.FileInfo {
+	hashGroups := make(map[string][]collector.FileInfo)
+	toHash := make([]hasher.FileToHash, 0, len(files))
+	fileByPath := make(map[string]collector.FileInfo, len(files))
+
+	for _, file := range files {
+		fileByPath[file.Path] = file
+		toHash = append(toHash, hasher.FileToHash{
+			Path: file.Path,
+			Size: file.Size,
+		})
+	}
+
+	for result := range hashFn(toHash) {
+		if result.Error != nil {
+			continue
+		}
+		file, ok := fileByPath[result.Path]
+		if !ok {
+			continue
+		}
+		hashGroups[result.Hash] = append(hashGroups[result.Hash], file)
+	}
+
+	return hashGroups
 }
 
 // buildDuplicateGroups converts hash groups to DuplicateGroup slice.

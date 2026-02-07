@@ -26,7 +26,6 @@ type Options struct {
 
 // Collector collects file metadata from a directory tree.
 type Collector struct {
-	opts      Options
 	skipFiles map[string]bool
 	skipDirs  map[string]bool
 }
@@ -34,7 +33,6 @@ type Collector struct {
 // New creates a new Collector with the given options.
 func New(opts Options) *Collector {
 	c := &Collector{
-		opts:      opts,
 		skipFiles: make(map[string]bool),
 		skipDirs:  make(map[string]bool),
 	}

@@ -100,8 +100,15 @@ func (s *Service) RunRename(req RenameRequest) (RenameExecution, error) {
 		return RenameExecution{}, err
 	}
 
-	execution := renameExecutionFromWorkflow(workflowResult)
-	if err := failOnUnsafeRenameResult(execution.Result); err != nil {
+	execution := RenameExecution{
+		RootDir:         workflowResult.RootDir,
+		FileCount:       workflowResult.FileCount,
+		CollectDuration: workflowResult.CollectDuration,
+		Result:          workflowResult.Result,
+	}
+	if err := failOnUnsafeOperation(execution.Result.Operations, "rename", func(op renamer.RenameOperation) (string, error) {
+		return op.OriginalPath, op.Error
+	}); err != nil {
 		return execution, err
 	}
 
@@ -115,8 +122,15 @@ func (s *Service) RunFlatten(req FlattenRequest) (FlattenExecution, error) {
 		return FlattenExecution{}, err
 	}
 
-	execution := flattenExecutionFromWorkflow(workflowResult)
-	if err := failOnUnsafeFlattenResult(execution.Result); err != nil {
+	execution := FlattenExecution{
+		RootDir:         workflowResult.RootDir,
+		FileCount:       workflowResult.FileCount,
+		CollectDuration: workflowResult.CollectDuration,
+		Result:          workflowResult.Result,
+	}
+	if err := failOnUnsafeOperation(execution.Result.Operations, "flatten", func(op flattener.MoveOperation) (string, error) {
+		return op.OriginalPath, op.Error
+	}); err != nil {
 		return execution, err
 	}
 
@@ -130,8 +144,15 @@ func (s *Service) RunDuplicate(req DuplicateRequest) (DuplicateExecution, error)
 		return DuplicateExecution{}, err
 	}
 
-	execution := duplicateExecutionFromWorkflow(workflowResult)
-	if err := failOnUnsafeDuplicateResult(execution.Result); err != nil {
+	execution := DuplicateExecution{
+		RootDir:         workflowResult.RootDir,
+		FileCount:       workflowResult.FileCount,
+		CollectDuration: workflowResult.CollectDuration,
+		Result:          workflowResult.Result,
+	}
+	if err := failOnUnsafeOperation(execution.Result.Operations, "duplicate", func(op deduplicator.DeleteOperation) (string, error) {
+		return op.Path, op.Error
+	}); err != nil {
 		return execution, err
 	}
 
@@ -269,33 +290,6 @@ func duplicateExecutor(dryRun bool, workers int) func(rootDir string, validator 
 	}
 }
 
-func renameExecutionFromWorkflow(workflowResult fileWorkflowResult[renamer.Result]) RenameExecution {
-	return RenameExecution{
-		RootDir:         workflowResult.RootDir,
-		FileCount:       workflowResult.FileCount,
-		CollectDuration: workflowResult.CollectDuration,
-		Result:          workflowResult.Result,
-	}
-}
-
-func flattenExecutionFromWorkflow(workflowResult fileWorkflowResult[flattener.Result]) FlattenExecution {
-	return FlattenExecution{
-		RootDir:         workflowResult.RootDir,
-		FileCount:       workflowResult.FileCount,
-		CollectDuration: workflowResult.CollectDuration,
-		Result:          workflowResult.Result,
-	}
-}
-
-func duplicateExecutionFromWorkflow(workflowResult fileWorkflowResult[deduplicator.Result]) DuplicateExecution {
-	return DuplicateExecution{
-		RootDir:         workflowResult.RootDir,
-		FileCount:       workflowResult.FileCount,
-		CollectDuration: workflowResult.CollectDuration,
-		Result:          workflowResult.Result,
-	}
-}
-
 func (s *Service) skipFileList() []string {
 	return append([]string(nil), s.skipFiles...)
 }
@@ -333,30 +327,11 @@ func resolveManifestOutputPath(target workflowTarget, outputPath string) (string
 	return resolvedPath, nil
 }
 
-func failOnUnsafeRenameResult(result renamer.Result) error {
-	for _, op := range result.Operations {
-		if isUnsafePathError(op.Error) {
-			return fmt.Errorf("unsafe path detected in rename command for %q: %w", op.OriginalPath, op.Error)
-		}
-	}
-
-	return nil
-}
-
-func failOnUnsafeFlattenResult(result flattener.Result) error {
-	for _, op := range result.Operations {
-		if isUnsafePathError(op.Error) {
-			return fmt.Errorf("unsafe path detected in flatten command for %q: %w", op.OriginalPath, op.Error)
-		}
-	}
-
-	return nil
-}
-
-func failOnUnsafeDuplicateResult(result deduplicator.Result) error {
-	for _, op := range result.Operations {
-		if isUnsafePathError(op.Error) {
-			return fmt.Errorf("unsafe path detected in duplicate command for %q: %w", op.Path, op.Error)
+func failOnUnsafeOperation[T any](operations []T, command string, operationData func(T) (path string, err error)) error {
+	for _, op := range operations {
+		path, err := operationData(op)
+		if isUnsafePathError(err) {
+			return fmt.Errorf("unsafe path detected in %s command for %q: %w", command, path, err)
 		}
 	}
 

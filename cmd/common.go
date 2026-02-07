@@ -91,6 +91,17 @@ func printSummary(lines ...string) {
 	}
 }
 
+func printDetailedOperations[T any](operations []T, printOperation func(T)) {
+	if !verbose && !dryRun {
+		return
+	}
+
+	for _, op := range operations {
+		printOperation(op)
+	}
+	fmt.Println()
+}
+
 func printDryRunHint() {
 	if !dryRun {
 		return

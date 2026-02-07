@@ -16,26 +16,28 @@ import (
 	"btidy/pkg/safepath"
 )
 
-func setupTestDir(t *testing.T) string {
-	t.Helper()
-	return testutil.TempDir(t)
-}
-
 func createTestFile(t *testing.T, path, content string, modTime time.Time) {
 	t.Helper()
 	testutil.CreateFileWithModTime(t, path, content, modTime)
 }
 
+func collectFiles(t *testing.T, root string) []collector.FileInfo {
+	t.Helper()
+
+	c := collector.New(collector.Options{})
+	files, err := c.Collect(root)
+	require.NoError(t, err)
+
+	return files
+}
+
 func TestFlattener_FlattenFiles_Basic(t *testing.T) {
-	tmpDir := setupTestDir(t)
-	defer os.RemoveAll(tmpDir)
+	tmpDir := t.TempDir()
 
 	modTime := time.Date(2018, 6, 15, 12, 0, 0, 0, time.UTC)
 	createTestFile(t, filepath.Join(tmpDir, "subdir", "file.txt"), "content", modTime)
 
-	c := collector.New(collector.Options{})
-	files, err := c.Collect(tmpDir)
-	require.NoError(t, err)
+	files := collectFiles(t, tmpDir)
 	require.Len(t, files, 1)
 
 	f, err := New(tmpDir, false)
@@ -57,15 +59,12 @@ func TestFlattener_FlattenFiles_Basic(t *testing.T) {
 }
 
 func TestFlattener_FlattenFiles_DryRun(t *testing.T) {
-	tmpDir := setupTestDir(t)
-	defer os.RemoveAll(tmpDir)
+	tmpDir := t.TempDir()
 
 	modTime := time.Date(2018, 6, 15, 12, 0, 0, 0, time.UTC)
 	createTestFile(t, filepath.Join(tmpDir, "subdir", "file.txt"), "content", modTime)
 
-	c := collector.New(collector.Options{})
-	files, err := c.Collect(tmpDir)
-	require.NoError(t, err)
+	files := collectFiles(t, tmpDir)
 
 	f, err := New(tmpDir, true) // dry run
 	require.NoError(t, err)
@@ -82,16 +81,13 @@ func TestFlattener_FlattenFiles_DryRun(t *testing.T) {
 }
 
 func TestFlattener_FlattenFiles_DryRun_NoFilesystemMutations(t *testing.T) {
-	tmpDir := setupTestDir(t)
-	defer os.RemoveAll(tmpDir)
+	tmpDir := t.TempDir()
 
 	modTime := time.Date(2018, 6, 15, 12, 0, 0, 0, time.UTC)
 	createTestFile(t, filepath.Join(tmpDir, "dir1", "file.txt"), "content", modTime)
 	createTestFile(t, filepath.Join(tmpDir, "dir2", "file.txt"), "content", modTime)
 
-	c := collector.New(collector.Options{})
-	files, err := c.Collect(tmpDir)
-	require.NoError(t, err)
+	files := collectFiles(t, tmpDir)
 	require.Len(t, files, 2)
 
 	f, err := New(tmpDir, true)
@@ -119,17 +115,14 @@ func TestFlattener_FlattenFiles_DryRun_NoFilesystemMutations(t *testing.T) {
 }
 
 func TestFlattener_FlattenFiles_Duplicates(t *testing.T) {
-	tmpDir := setupTestDir(t)
-	defer os.RemoveAll(tmpDir)
+	tmpDir := t.TempDir()
 
 	modTime := time.Date(2018, 6, 15, 12, 0, 0, 0, time.UTC)
 	// Same name, same size, same mtime = duplicate.
 	createTestFile(t, filepath.Join(tmpDir, "dir1", "file.txt"), "content", modTime)
 	createTestFile(t, filepath.Join(tmpDir, "dir2", "file.txt"), "content", modTime)
 
-	c := collector.New(collector.Options{})
-	files, err := c.Collect(tmpDir)
-	require.NoError(t, err)
+	files := collectFiles(t, tmpDir)
 	require.Len(t, files, 2)
 
 	f, err := New(tmpDir, false)
@@ -146,16 +139,13 @@ func TestFlattener_FlattenFiles_Duplicates(t *testing.T) {
 }
 
 func TestFlattener_FlattenFiles_SameMetadataDifferentContent_NotDuplicate(t *testing.T) {
-	tmpDir := setupTestDir(t)
-	defer os.RemoveAll(tmpDir)
+	tmpDir := t.TempDir()
 
 	modTime := time.Date(2018, 6, 15, 12, 0, 0, 0, time.UTC)
 	createTestFile(t, filepath.Join(tmpDir, "dir1", "file.txt"), "alpha-1", modTime)
 	createTestFile(t, filepath.Join(tmpDir, "dir2", "file.txt"), "omega-2", modTime)
 
-	c := collector.New(collector.Options{})
-	files, err := c.Collect(tmpDir)
-	require.NoError(t, err)
+	files := collectFiles(t, tmpDir)
 	require.Len(t, files, 2)
 
 	f, err := New(tmpDir, false)
@@ -184,8 +174,7 @@ func TestFlattener_FlattenFiles_SameMetadataDifferentContent_NotDuplicate(t *tes
 }
 
 func TestFlattener_FlattenFiles_NameConflict(t *testing.T) {
-	tmpDir := setupTestDir(t)
-	defer os.RemoveAll(tmpDir)
+	tmpDir := t.TempDir()
 
 	modTime1 := time.Date(2018, 6, 15, 12, 0, 0, 0, time.UTC)
 	modTime2 := time.Date(2018, 7, 20, 12, 0, 0, 0, time.UTC)
@@ -193,9 +182,7 @@ func TestFlattener_FlattenFiles_NameConflict(t *testing.T) {
 	createTestFile(t, filepath.Join(tmpDir, "dir1", "file.txt"), "content1", modTime1)
 	createTestFile(t, filepath.Join(tmpDir, "dir2", "file.txt"), "content2", modTime2)
 
-	c := collector.New(collector.Options{})
-	files, err := c.Collect(tmpDir)
-	require.NoError(t, err)
+	files := collectFiles(t, tmpDir)
 	require.Len(t, files, 2)
 
 	f, err := New(tmpDir, false)
@@ -214,15 +201,12 @@ func TestFlattener_FlattenFiles_NameConflict(t *testing.T) {
 }
 
 func TestFlattener_FlattenFiles_AlreadyInRoot(t *testing.T) {
-	tmpDir := setupTestDir(t)
-	defer os.RemoveAll(tmpDir)
+	tmpDir := t.TempDir()
 
 	modTime := time.Date(2018, 6, 15, 12, 0, 0, 0, time.UTC)
 	createTestFile(t, filepath.Join(tmpDir, "rootfile.txt"), "content", modTime)
 
-	c := collector.New(collector.Options{})
-	files, err := c.Collect(tmpDir)
-	require.NoError(t, err)
+	files := collectFiles(t, tmpDir)
 	require.Len(t, files, 1)
 
 	f, err := New(tmpDir, false)
@@ -236,15 +220,12 @@ func TestFlattener_FlattenFiles_AlreadyInRoot(t *testing.T) {
 }
 
 func TestFlattener_FlattenFiles_RemovesEmptyDirs(t *testing.T) {
-	tmpDir := setupTestDir(t)
-	defer os.RemoveAll(tmpDir)
+	tmpDir := t.TempDir()
 
 	modTime := time.Date(2018, 6, 15, 12, 0, 0, 0, time.UTC)
 	createTestFile(t, filepath.Join(tmpDir, "a", "b", "c", "file.txt"), "content", modTime)
 
-	c := collector.New(collector.Options{})
-	files, err := c.Collect(tmpDir)
-	require.NoError(t, err)
+	files := collectFiles(t, tmpDir)
 
 	f, err := New(tmpDir, false)
 	require.NoError(t, err)
@@ -259,8 +240,7 @@ func TestFlattener_FlattenFiles_RemovesEmptyDirs(t *testing.T) {
 }
 
 func TestFlattener_FlattenFiles_Empty(t *testing.T) {
-	tmpDir := setupTestDir(t)
-	defer os.RemoveAll(tmpDir)
+	tmpDir := t.TempDir()
 
 	f, err := New(tmpDir, false)
 	require.NoError(t, err)
@@ -284,8 +264,7 @@ func TestFlattener_DryRun(t *testing.T) {
 }
 
 func TestFlattener_FlattenFiles_DeepNesting(t *testing.T) {
-	tmpDir := setupTestDir(t)
-	defer os.RemoveAll(tmpDir)
+	tmpDir := t.TempDir()
 
 	modTime := time.Date(2018, 6, 15, 12, 0, 0, 0, time.UTC)
 	// Create files at various depths.
@@ -295,9 +274,7 @@ func TestFlattener_FlattenFiles_DeepNesting(t *testing.T) {
 	createTestFile(t, filepath.Join(tmpDir, "l1", "l2", "l3", "l4", "file4.txt"), "4", modTime)
 	createTestFile(t, filepath.Join(tmpDir, "l1", "l2", "l3", "l4", "l5", "file5.txt"), "5", modTime)
 
-	c := collector.New(collector.Options{})
-	files, err := c.Collect(tmpDir)
-	require.NoError(t, err)
+	files := collectFiles(t, tmpDir)
 	require.Len(t, files, 5)
 
 	f, err := New(tmpDir, false)
@@ -334,8 +311,7 @@ func TestNew_InvalidRoot(t *testing.T) {
 }
 
 func TestFlattener_FlattenFiles_UnsafeSymlinkFailsBeforeMutations(t *testing.T) {
-	tmpDir := setupTestDir(t)
-	defer os.RemoveAll(tmpDir)
+	tmpDir := t.TempDir()
 
 	outsideDir := t.TempDir()
 	outsideFile := filepath.Join(outsideDir, "outside.txt")
@@ -349,9 +325,7 @@ func TestFlattener_FlattenFiles_UnsafeSymlinkFailsBeforeMutations(t *testing.T) 
 		t.Skipf("symlink not supported: %v", err)
 	}
 
-	c := collector.New(collector.Options{})
-	files, err := c.Collect(tmpDir)
-	require.NoError(t, err)
+	files := collectFiles(t, tmpDir)
 
 	f, err := New(tmpDir, false)
 	require.NoError(t, err)

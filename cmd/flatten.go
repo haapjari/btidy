@@ -70,12 +70,7 @@ func runFlatten(_ *cobra.Command, args []string) error {
 
 	result := execution.Result
 
-	if verbose || dryRun {
-		for _, op := range result.Operations {
-			printFlattenOperation(op)
-		}
-		fmt.Println()
-	}
+	printDetailedOperations(result.Operations, printFlattenOperation)
 
 	lines := []string{
 		fmt.Sprintf("Total files:     %d", result.TotalFiles),

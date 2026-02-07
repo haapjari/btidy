@@ -151,19 +151,9 @@ func assertMissing(t *testing.T, path string) {
 	t.Helper()
 
 	if _, err := os.Stat(path); err == nil {
-		t.Fatalf("expected file to be missing: %s", path)
+		t.Fatalf("expected path to be missing: %s", path)
 	} else if !os.IsNotExist(err) {
 		t.Fatalf("expected path to be missing: %s (unexpected error: %v)", path, err)
-	}
-}
-
-func assertDirMissing(t *testing.T, path string) {
-	t.Helper()
-
-	if _, err := os.Stat(path); err == nil {
-		t.Fatalf("expected directory to be missing: %s", path)
-	} else if !os.IsNotExist(err) {
-		t.Fatalf("expected directory to be missing: %s (unexpected error: %v)", path, err)
 	}
 }
 
@@ -179,6 +169,14 @@ func assertCommandFailed(t *testing.T, result cmdResult, keywords ...string) {
 		if !strings.Contains(combined, strings.ToLower(keyword)) {
 			t.Fatalf("expected output to contain %q\n%s", keyword, result.combinedOutput())
 		}
+	}
+}
+
+func assertCommandSucceeded(t *testing.T, label string, result cmdResult) {
+	t.Helper()
+
+	if result.err != nil {
+		t.Fatalf("%s failed: %v\n%s", label, result.err, result.combinedOutput())
 	}
 }
 
@@ -222,9 +220,7 @@ func TestEndToEndRename_DryRunAndApply(t *testing.T) {
 	writeFile(t, filepath.Join(root, "Photo.JPG"), "gamma", modTime)
 
 	dryRun := runBinary(t, binPath, "rename", "--dry-run", root)
-	if dryRun.err != nil {
-		t.Fatalf("rename dry-run failed: %v\n%s", dryRun.err, dryRun.combinedOutput())
-	}
+	assertCommandSucceeded(t, "rename dry-run", dryRun)
 	if !strings.Contains(dryRun.stdout, "=== DRY RUN - no changes will be made ===") {
 		t.Fatalf("expected dry-run banner in output\n%s", dryRun.stdout)
 	}
@@ -237,9 +233,7 @@ func TestEndToEndRename_DryRunAndApply(t *testing.T) {
 	assertMissing(t, filepath.Join(root, datePrefix+"_my_document.pdf"))
 
 	apply := runBinary(t, binPath, "rename", root)
-	if apply.err != nil {
-		t.Fatalf("rename apply failed: %v\n%s", apply.err, apply.combinedOutput())
-	}
+	assertCommandSucceeded(t, "rename apply", apply)
 
 	assertMissing(t, filepath.Join(root, "My Document.pdf"))
 	assertMissing(t, filepath.Join(root, "Report (Final).docx"))
@@ -262,18 +256,14 @@ func TestEndToEndFlatten_DryRunAndApply(t *testing.T) {
 	writeFile(t, filepath.Join(root, "rootfile.txt"), "root", modTime)
 
 	dryRun := runBinary(t, binPath, "--workers", "1", "flatten", "--dry-run", root)
-	if dryRun.err != nil {
-		t.Fatalf("flatten dry-run failed: %v\n%s", dryRun.err, dryRun.combinedOutput())
-	}
+	assertCommandSucceeded(t, "flatten dry-run", dryRun)
 
 	assertExists(t, filepath.Join(root, "dir1", "file.txt"))
 	assertExists(t, filepath.Join(root, "dir2", "file.txt"))
 	assertMissing(t, filepath.Join(root, "file.txt"))
 
 	apply := runBinary(t, binPath, "--workers", "1", "flatten", root)
-	if apply.err != nil {
-		t.Fatalf("flatten apply failed: %v\n%s", apply.err, apply.combinedOutput())
-	}
+	assertCommandSucceeded(t, "flatten apply", apply)
 
 	assertExists(t, filepath.Join(root, "file.txt"))
 	assertExists(t, filepath.Join(root, "unique.txt"))
@@ -282,8 +272,8 @@ func TestEndToEndFlatten_DryRunAndApply(t *testing.T) {
 
 	assertMissing(t, filepath.Join(root, "dir1", "file.txt"))
 	assertMissing(t, filepath.Join(root, "dir2", "file.txt"))
-	assertDirMissing(t, filepath.Join(root, "dir1"))
-	assertDirMissing(t, filepath.Join(root, "dir2"))
+	assertMissing(t, filepath.Join(root, "dir1"))
+	assertMissing(t, filepath.Join(root, "dir2"))
 }
 
 func TestEndToEndDuplicate_DryRunAndApply(t *testing.T) {
@@ -296,17 +286,13 @@ func TestEndToEndDuplicate_DryRunAndApply(t *testing.T) {
 	writeFile(t, filepath.Join(root, "unique.txt"), "unique", modTime)
 
 	dryRun := runBinary(t, binPath, "--workers", "1", "duplicate", "--dry-run", root)
-	if dryRun.err != nil {
-		t.Fatalf("duplicate dry-run failed: %v\n%s", dryRun.err, dryRun.combinedOutput())
-	}
+	assertCommandSucceeded(t, "duplicate dry-run", dryRun)
 
 	assertExists(t, filepath.Join(root, "a.txt"))
 	assertExists(t, filepath.Join(root, "sub", "a_copy.txt"))
 
 	apply := runBinary(t, binPath, "--workers", "1", "duplicate", root)
-	if apply.err != nil {
-		t.Fatalf("duplicate apply failed: %v\n%s", apply.err, apply.combinedOutput())
-	}
+	assertCommandSucceeded(t, "duplicate apply", apply)
 
 	assertExists(t, filepath.Join(root, "a.txt"))
 	assertMissing(t, filepath.Join(root, "sub", "a_copy.txt"))
@@ -321,18 +307,14 @@ func TestEndToEndRename_Idempotent(t *testing.T) {
 	writeFile(t, filepath.Join(root, "My Document.pdf"), "alpha", modTime)
 
 	firstRun := runBinary(t, binPath, "rename", root)
-	if firstRun.err != nil {
-		t.Fatalf("first rename run failed: %v\n%s", firstRun.err, firstRun.combinedOutput())
-	}
+	assertCommandSucceeded(t, "first rename run", firstRun)
 
 	datePrefix := modTime.Format("2006-01-02")
 	renamedPath := filepath.Join(root, datePrefix+"_my_document.pdf")
 	assertExists(t, renamedPath)
 
 	secondRun := runBinary(t, binPath, "rename", root)
-	if secondRun.err != nil {
-		t.Fatalf("second rename run failed: %v\n%s", secondRun.err, secondRun.combinedOutput())
-	}
+	assertCommandSucceeded(t, "second rename run", secondRun)
 
 	assertExists(t, renamedPath)
 	assertMissing(t, filepath.Join(root, "My Document.pdf"))
@@ -353,18 +335,14 @@ func TestEndToEndDuplicate_Idempotent(t *testing.T) {
 	writeFile(t, filepath.Join(root, "unique.txt"), "unique", modTime)
 
 	firstRun := runBinary(t, binPath, "duplicate", root)
-	if firstRun.err != nil {
-		t.Fatalf("first duplicate run failed: %v\n%s", firstRun.err, firstRun.combinedOutput())
-	}
+	assertCommandSucceeded(t, "first duplicate run", firstRun)
 
 	if got := fileCount(t, root); got != 2 {
 		t.Fatalf("expected two files after first dedupe run, got %d", got)
 	}
 
 	secondRun := runBinary(t, binPath, "duplicate", root)
-	if secondRun.err != nil {
-		t.Fatalf("second duplicate run failed: %v\n%s", secondRun.err, secondRun.combinedOutput())
-	}
+	assertCommandSucceeded(t, "second duplicate run", secondRun)
 
 	if got := fileCount(t, root); got != 2 {
 		t.Fatalf("expected file count to remain stable after second dedupe run, got %d", got)
@@ -382,9 +360,7 @@ func TestEndToEndSkipFiles_DefaultsAreIgnored(t *testing.T) {
 	writeFile(t, filepath.Join(root, "sub", "My Notes.txt"), "notes", modTime)
 
 	renameRun := runBinary(t, binPath, "rename", root)
-	if renameRun.err != nil {
-		t.Fatalf("rename run failed: %v\n%s", renameRun.err, renameRun.combinedOutput())
-	}
+	assertCommandSucceeded(t, "rename run", renameRun)
 
 	datePrefix := modTime.Format("2006-01-02")
 	assertExists(t, filepath.Join(root, ".DS_Store"))
@@ -393,9 +369,7 @@ func TestEndToEndSkipFiles_DefaultsAreIgnored(t *testing.T) {
 	assertExists(t, filepath.Join(root, "sub", datePrefix+"_my_notes.txt"))
 
 	flattenRun := runBinary(t, binPath, "flatten", root)
-	if flattenRun.err != nil {
-		t.Fatalf("flatten run failed: %v\n%s", flattenRun.err, flattenRun.combinedOutput())
-	}
+	assertCommandSucceeded(t, "flatten run", flattenRun)
 
 	assertExists(t, filepath.Join(root, ".DS_Store"))
 	assertExists(t, filepath.Join(root, "organizer.log"))
@@ -404,9 +378,7 @@ func TestEndToEndSkipFiles_DefaultsAreIgnored(t *testing.T) {
 	assertMissing(t, filepath.Join(root, "sub", datePrefix+"_my_notes.txt"))
 
 	duplicateRun := runBinary(t, binPath, "duplicate", root)
-	if duplicateRun.err != nil {
-		t.Fatalf("duplicate run failed: %v\n%s", duplicateRun.err, duplicateRun.combinedOutput())
-	}
+	assertCommandSucceeded(t, "duplicate run", duplicateRun)
 
 	assertExists(t, filepath.Join(root, ".DS_Store"))
 	assertExists(t, filepath.Join(root, "organizer.log"))
@@ -440,29 +412,19 @@ func TestEndToEndPipeline_ManifestIntegrity(t *testing.T) {
 	afterManifest := filepath.Join(target, "Thumbs.db")
 
 	before := runBinary(t, binPath, "--workers", "1", "manifest", target, "-o", beforeManifest)
-	if before.err != nil {
-		t.Fatalf("manifest before failed: %v\n%s", before.err, before.combinedOutput())
-	}
+	assertCommandSucceeded(t, "manifest before", before)
 
 	rename := runBinary(t, binPath, "rename", target)
-	if rename.err != nil {
-		t.Fatalf("rename failed: %v\n%s", rename.err, rename.combinedOutput())
-	}
+	assertCommandSucceeded(t, "rename", rename)
 
 	flatten := runBinary(t, binPath, "--workers", "1", "flatten", target)
-	if flatten.err != nil {
-		t.Fatalf("flatten failed: %v\n%s", flatten.err, flatten.combinedOutput())
-	}
+	assertCommandSucceeded(t, "flatten", flatten)
 
 	duplicate := runBinary(t, binPath, "--workers", "1", "duplicate", target)
-	if duplicate.err != nil {
-		t.Fatalf("duplicate failed: %v\n%s", duplicate.err, duplicate.combinedOutput())
-	}
+	assertCommandSucceeded(t, "duplicate", duplicate)
 
 	after := runBinary(t, binPath, "--workers", "1", "manifest", target, "-o", afterManifest)
-	if after.err != nil {
-		t.Fatalf("manifest after failed: %v\n%s", after.err, after.combinedOutput())
-	}
+	assertCommandSucceeded(t, "manifest after", after)
 
 	beforeData, err := manifest.Load(beforeManifest)
 	if err != nil {

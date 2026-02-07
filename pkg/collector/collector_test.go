@@ -16,7 +16,7 @@ import (
 func setupTestDir(t *testing.T) string {
 	t.Helper()
 
-	tmpDir := testutil.TempDir(t)
+	tmpDir := t.TempDir()
 
 	// Create test structure:
 	// tmpDir/
@@ -45,14 +45,21 @@ func setupTestDir(t *testing.T) string {
 	return tmpDir
 }
 
+func collectFiles(t *testing.T, c *Collector, root string) []FileInfo {
+	t.Helper()
+
+	files, err := c.Collect(root)
+	require.NoError(t, err)
+
+	return files
+}
+
 func TestCollector_Collect(t *testing.T) {
 	tmpDir := setupTestDir(t)
-	defer os.RemoveAll(tmpDir)
 
 	c := New(Options{})
 
-	files, err := c.Collect(tmpDir)
-	require.NoError(t, err)
+	files := collectFiles(t, c, tmpDir)
 	assert.Len(t, files, 5)
 
 	// Verify all files have required metadata
@@ -67,14 +74,12 @@ func TestCollector_Collect(t *testing.T) {
 
 func TestCollector_Collect_SkipFiles(t *testing.T) {
 	tmpDir := setupTestDir(t)
-	defer os.RemoveAll(tmpDir)
 
 	c := New(Options{
 		SkipFiles: []string{"file1.txt", "file3.txt"},
 	})
 
-	files, err := c.Collect(tmpDir)
-	require.NoError(t, err)
+	files := collectFiles(t, c, tmpDir)
 	assert.Len(t, files, 3, "expected 3 files (skipped 2)")
 
 	// Verify skipped files are not in result
@@ -86,14 +91,12 @@ func TestCollector_Collect_SkipFiles(t *testing.T) {
 
 func TestCollector_Collect_SkipDirs(t *testing.T) {
 	tmpDir := setupTestDir(t)
-	defer os.RemoveAll(tmpDir)
 
 	c := New(Options{
 		SkipDirs: []string{"skip_this"},
 	})
 
-	files, err := c.Collect(tmpDir)
-	require.NoError(t, err)
+	files := collectFiles(t, c, tmpDir)
 	assert.Len(t, files, 4, "expected 4 files (skipped skip_this dir)")
 
 	// Verify files from skipped dir are not in result
@@ -104,7 +107,6 @@ func TestCollector_Collect_SkipDirs(t *testing.T) {
 
 func TestCollector_CollectFromDir(t *testing.T) {
 	tmpDir := setupTestDir(t)
-	defer os.RemoveAll(tmpDir)
 
 	c := New(Options{})
 
@@ -122,14 +124,11 @@ func TestCollector_CollectFromDir(t *testing.T) {
 }
 
 func TestCollector_Collect_EmptyDir(t *testing.T) {
-	tmpDir, err := os.MkdirTemp("", "collector-empty-*")
-	require.NoError(t, err)
-	defer os.RemoveAll(tmpDir)
+	tmpDir := t.TempDir()
 
 	c := New(Options{})
 
-	files, err := c.Collect(tmpDir)
-	require.NoError(t, err)
+	files := collectFiles(t, c, tmpDir)
 	assert.Empty(t, files, "expected 0 files in empty dir")
 }
 
@@ -141,12 +140,10 @@ func TestCollector_Collect_NonExistentDir(t *testing.T) {
 }
 
 func TestFileInfo_ModTime(t *testing.T) {
-	tmpDir, err := os.MkdirTemp("", "collector-modtime-*")
-	require.NoError(t, err)
-	defer os.RemoveAll(tmpDir)
+	tmpDir := t.TempDir()
 
 	testFile := filepath.Join(tmpDir, "test.txt")
-	err = os.WriteFile(testFile, []byte("test"), 0644)
+	err := os.WriteFile(testFile, []byte("test"), 0644)
 	require.NoError(t, err)
 
 	// Set a specific modification time
@@ -155,8 +152,7 @@ func TestFileInfo_ModTime(t *testing.T) {
 	require.NoError(t, err)
 
 	c := New(Options{})
-	files, err := c.Collect(tmpDir)
-	require.NoError(t, err)
+	files := collectFiles(t, c, tmpDir)
 	require.Len(t, files, 1)
 
 	// Compare times (allow for some filesystem precision differences)

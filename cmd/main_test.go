@@ -9,6 +9,8 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"btidy/internal/testutil"
 )
 
 func setCommandGlobals(t *testing.T, dryRunValue, verboseValue bool, workersValue int) {
@@ -51,23 +53,10 @@ func captureStdout(t *testing.T, fn func()) string {
 	return string(out)
 }
 
-func createCommandTestFile(t *testing.T, path, content string, modTime time.Time) {
-	t.Helper()
-
-	err := os.MkdirAll(filepath.Dir(path), 0o755)
-	require.NoError(t, err)
-
-	err = os.WriteFile(path, []byte(content), 0o600)
-	require.NoError(t, err)
-
-	err = os.Chtimes(path, modTime, modTime)
-	require.NoError(t, err)
-}
-
 func TestRunRename_DryRun_OutputSummary(t *testing.T) {
 	tmpDir := t.TempDir()
 	modTime := time.Date(2018, 6, 15, 12, 0, 0, 0, time.UTC)
-	createCommandTestFile(t, filepath.Join(tmpDir, "My Document.pdf"), "content", modTime)
+	testutil.CreateFileWithModTime(t, filepath.Join(tmpDir, "My Document.pdf"), "content", modTime)
 
 	setCommandGlobals(t, true, false, 1)
 
@@ -96,7 +85,7 @@ func TestRunRename_DryRun_OutputSummary(t *testing.T) {
 func TestRunFlatten_DryRun_OutputSummary(t *testing.T) {
 	tmpDir := t.TempDir()
 	modTime := time.Date(2018, 6, 15, 12, 0, 0, 0, time.UTC)
-	createCommandTestFile(t, filepath.Join(tmpDir, "subdir", "file.txt"), "content", modTime)
+	testutil.CreateFileWithModTime(t, filepath.Join(tmpDir, "subdir", "file.txt"), "content", modTime)
 
 	setCommandGlobals(t, true, false, 1)
 

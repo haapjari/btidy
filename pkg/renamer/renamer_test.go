@@ -13,12 +13,6 @@ import (
 	"btidy/pkg/collector"
 )
 
-// setupTestDir creates a temporary directory with test files.
-func setupTestDir(t *testing.T) string {
-	t.Helper()
-	return testutil.TempDir(t)
-}
-
 // createTestFile creates a file with specific modification time.
 func createTestFile(t *testing.T, dir, name string, modTime time.Time) {
 	t.Helper()
@@ -31,16 +25,23 @@ func createTestFileWithContent(t *testing.T, dir, name, content string, modTime 
 	testutil.CreateFileWithModTime(t, filepath.Join(dir, name), content, modTime)
 }
 
+func collectFiles(t *testing.T, root string) []collector.FileInfo {
+	t.Helper()
+
+	c := collector.New(collector.Options{})
+	files, err := c.Collect(root)
+	require.NoError(t, err)
+
+	return files
+}
+
 func TestRenamer_RenameFiles_DryRun(t *testing.T) {
-	tmpDir := setupTestDir(t)
-	defer os.RemoveAll(tmpDir)
+	tmpDir := t.TempDir()
 
 	modTime := time.Date(2018, 6, 15, 12, 0, 0, 0, time.UTC)
 	createTestFile(t, tmpDir, "My Document.pdf", modTime)
 
-	c := collector.New(collector.Options{})
-	files, err := c.Collect(tmpDir)
-	require.NoError(t, err)
+	files := collectFiles(t, tmpDir)
 	require.Len(t, files, 1)
 
 	r, err := New(tmpDir, true) // dry run
@@ -66,15 +67,12 @@ func TestRenamer_RenameFiles_DryRun(t *testing.T) {
 }
 
 func TestRenamer_RenameFiles_ActualRename(t *testing.T) {
-	tmpDir := setupTestDir(t)
-	defer os.RemoveAll(tmpDir)
+	tmpDir := t.TempDir()
 
 	modTime := time.Date(2018, 6, 15, 12, 0, 0, 0, time.UTC)
 	createTestFile(t, tmpDir, "My Document.pdf", modTime)
 
-	c := collector.New(collector.Options{})
-	files, err := c.Collect(tmpDir)
-	require.NoError(t, err)
+	files := collectFiles(t, tmpDir)
 	require.Len(t, files, 1)
 
 	r, err := New(tmpDir, false) // actual rename
@@ -94,17 +92,14 @@ func TestRenamer_RenameFiles_ActualRename(t *testing.T) {
 }
 
 func TestRenamer_RenameFiles_AlreadyNamedWithDatePrefix(t *testing.T) {
-	tmpDir := setupTestDir(t)
-	defer os.RemoveAll(tmpDir)
+	tmpDir := t.TempDir()
 
 	modTime := time.Date(2018, 6, 15, 12, 0, 0, 0, time.UTC)
 	// Create a file that already has a date prefix - it will get another one
 	// because GenerateTimestampedName always adds the date prefix
 	createTestFile(t, tmpDir, "2018-06-15_document.pdf", modTime)
 
-	c := collector.New(collector.Options{})
-	files, err := c.Collect(tmpDir)
-	require.NoError(t, err)
+	files := collectFiles(t, tmpDir)
 	require.Len(t, files, 1)
 
 	r, err := New(tmpDir, false)
@@ -122,15 +117,12 @@ func TestRenamer_RenameFiles_AlreadyNamedWithDatePrefix(t *testing.T) {
 }
 
 func TestRenamer_RenameFiles_TBDPrefixSkipped(t *testing.T) {
-	tmpDir := setupTestDir(t)
-	defer os.RemoveAll(tmpDir)
+	tmpDir := t.TempDir()
 
 	modTime := time.Date(2019, 6, 15, 12, 0, 0, 0, time.UTC)
 	createTestFile(t, tmpDir, "2019-TBD-TBD_document.pdf", modTime)
 
-	c := collector.New(collector.Options{})
-	files, err := c.Collect(tmpDir)
-	require.NoError(t, err)
+	files := collectFiles(t, tmpDir)
 	require.Len(t, files, 1)
 
 	r, err := New(tmpDir, false)
@@ -152,15 +144,12 @@ func TestRenamer_RenameFiles_TBDPrefixSkipped(t *testing.T) {
 }
 
 func TestRenamer_RenameFiles_DoubleDatePrefixCollapsed(t *testing.T) {
-	tmpDir := setupTestDir(t)
-	defer os.RemoveAll(tmpDir)
+	tmpDir := t.TempDir()
 
 	modTime := time.Date(2025, 1, 1, 8, 0, 0, 0, time.UTC)
 	createTestFile(t, tmpDir, "2025-01-01_2025-01-01_report.pdf", modTime)
 
-	c := collector.New(collector.Options{})
-	files, err := c.Collect(tmpDir)
-	require.NoError(t, err)
+	files := collectFiles(t, tmpDir)
 	require.Len(t, files, 1)
 
 	r, err := New(tmpDir, true)
@@ -179,8 +168,7 @@ func TestRenamer_RenameFiles_DoubleDatePrefixCollapsed(t *testing.T) {
 }
 
 func TestRenamer_RenameFiles_HandleConflicts(t *testing.T) {
-	tmpDir := setupTestDir(t)
-	defer os.RemoveAll(tmpDir)
+	tmpDir := t.TempDir()
 
 	// Create two files with same name but different content
 	// They will have the same sanitized name
@@ -188,9 +176,7 @@ func TestRenamer_RenameFiles_HandleConflicts(t *testing.T) {
 	createTestFileWithContent(t, tmpDir, "Document.pdf", "content-a", modTime)
 	createTestFileWithContent(t, tmpDir, "document.pdf", "content-bb", modTime) // different case, size
 
-	c := collector.New(collector.Options{})
-	files, err := c.Collect(tmpDir)
-	require.NoError(t, err)
+	files := collectFiles(t, tmpDir)
 	require.Len(t, files, 2)
 
 	r, err := New(tmpDir, true) // dry run first
@@ -210,16 +196,13 @@ func TestRenamer_RenameFiles_HandleConflicts(t *testing.T) {
 }
 
 func TestRenamer_RenameFiles_SameSizeDifferentContent_BatchKeepsBoth(t *testing.T) {
-	tmpDir := setupTestDir(t)
-	defer os.RemoveAll(tmpDir)
+	tmpDir := t.TempDir()
 
 	modTime := time.Date(2018, 6, 15, 12, 0, 0, 0, time.UTC)
 	createTestFileWithContent(t, tmpDir, "Photo.jpg", "alpha-123", modTime)
 	createTestFileWithContent(t, tmpDir, "photo.jpg", "omega-12", modTime)
 
-	c := collector.New(collector.Options{})
-	files, err := c.Collect(tmpDir)
-	require.NoError(t, err)
+	files := collectFiles(t, tmpDir)
 	require.Len(t, files, 2)
 
 	r, err := New(tmpDir, false)
@@ -249,16 +232,13 @@ func TestRenamer_RenameFiles_SameSizeDifferentContent_BatchKeepsBoth(t *testing.
 }
 
 func TestRenamer_RenameFiles_RemovesDuplicateInBatch(t *testing.T) {
-	tmpDir := setupTestDir(t)
-	defer os.RemoveAll(tmpDir)
+	tmpDir := t.TempDir()
 
 	modTime := time.Date(2018, 6, 15, 12, 0, 0, 0, time.UTC)
 	createTestFileWithContent(t, tmpDir, "Report.pdf", "same-content", modTime)
 	createTestFileWithContent(t, tmpDir, "report.pdf", "same-content", modTime)
 
-	c := collector.New(collector.Options{})
-	files, err := c.Collect(tmpDir)
-	require.NoError(t, err)
+	files := collectFiles(t, tmpDir)
 	require.Len(t, files, 2)
 
 	r, err := New(tmpDir, false)
@@ -278,8 +258,7 @@ func TestRenamer_RenameFiles_RemovesDuplicateInBatch(t *testing.T) {
 }
 
 func TestRenamer_RenameFiles_RemovesDuplicateTarget(t *testing.T) {
-	tmpDir := setupTestDir(t)
-	defer os.RemoveAll(tmpDir)
+	tmpDir := t.TempDir()
 
 	modTime := time.Date(2018, 6, 15, 12, 0, 0, 0, time.UTC)
 	createTestFile(t, tmpDir, "My Doc.pdf", modTime)
@@ -323,8 +302,7 @@ func TestRenamer_RenameFiles_RemovesDuplicateTarget(t *testing.T) {
 }
 
 func TestRenamer_RenameFiles_SameSizeDifferentContent_TargetCollisionKeepsSource(t *testing.T) {
-	tmpDir := setupTestDir(t)
-	defer os.RemoveAll(tmpDir)
+	tmpDir := t.TempDir()
 
 	modTime := time.Date(2018, 6, 15, 12, 0, 0, 0, time.UTC)
 	createTestFileWithContent(t, tmpDir, "My Doc.pdf", "ABCD", modTime)
@@ -368,16 +346,13 @@ func TestRenamer_RenameFiles_SameSizeDifferentContent_TargetCollisionKeepsSource
 }
 
 func TestRenamer_RenameFiles_DryRun_NoFilesystemMutations(t *testing.T) {
-	tmpDir := setupTestDir(t)
-	defer os.RemoveAll(tmpDir)
+	tmpDir := t.TempDir()
 
 	modTime := time.Date(2018, 6, 15, 12, 0, 0, 0, time.UTC)
 	createTestFileWithContent(t, tmpDir, "Report.pdf", "same-content", modTime)
 	createTestFileWithContent(t, tmpDir, "report.pdf", "same-content", modTime)
 
-	c := collector.New(collector.Options{})
-	files, err := c.Collect(tmpDir)
-	require.NoError(t, err)
+	files := collectFiles(t, tmpDir)
 	require.Len(t, files, 2)
 
 	r, err := New(tmpDir, true)
@@ -400,8 +375,7 @@ func TestRenamer_RenameFiles_DryRun_NoFilesystemMutations(t *testing.T) {
 }
 
 func TestRenamer_RenameFiles_MultipleFiles(t *testing.T) {
-	tmpDir := setupTestDir(t)
-	defer os.RemoveAll(tmpDir)
+	tmpDir := t.TempDir()
 
 	modTime1 := time.Date(2018, 1, 15, 12, 0, 0, 0, time.UTC)
 	modTime2 := time.Date(2018, 6, 20, 12, 0, 0, 0, time.UTC)
@@ -411,9 +385,7 @@ func TestRenamer_RenameFiles_MultipleFiles(t *testing.T) {
 	createTestFile(t, tmpDir, "Työpöytä.txt", modTime2)
 	createTestFile(t, tmpDir, "KeePass.kdbx", modTime3)
 
-	c := collector.New(collector.Options{})
-	files, err := c.Collect(tmpDir)
-	require.NoError(t, err)
+	files := collectFiles(t, tmpDir)
 	require.Len(t, files, 3)
 
 	r, err := New(tmpDir, false) // actual rename
@@ -438,8 +410,7 @@ func TestRenamer_RenameFiles_MultipleFiles(t *testing.T) {
 }
 
 func TestRenamer_RenameFiles_SubdirectoriesInPlace(t *testing.T) {
-	tmpDir := setupTestDir(t)
-	defer os.RemoveAll(tmpDir)
+	tmpDir := t.TempDir()
 
 	// Create subdirectory with file
 	subDir := filepath.Join(tmpDir, "subdir")
@@ -449,9 +420,7 @@ func TestRenamer_RenameFiles_SubdirectoriesInPlace(t *testing.T) {
 	modTime := time.Date(2018, 3, 10, 12, 0, 0, 0, time.UTC)
 	createTestFile(t, subDir, "Nested File.pdf", modTime)
 
-	c := collector.New(collector.Options{})
-	files, err := c.Collect(tmpDir)
-	require.NoError(t, err)
+	files := collectFiles(t, tmpDir)
 	require.Len(t, files, 1)
 
 	r, err := New(tmpDir, false)

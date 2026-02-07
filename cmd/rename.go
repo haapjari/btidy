@@ -5,6 +5,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"btidy/pkg/renamer"
 	"btidy/pkg/usecase"
 )
 
@@ -58,19 +59,16 @@ func runRename(_ *cobra.Command, args []string) error {
 
 	result := execution.Result
 
-	if verbose || dryRun {
-		for _, op := range result.Operations {
-			if op.Skipped {
-				fmt.Printf("SKIP: %s (%s)\n", op.OriginalName, op.SkipReason)
-			} else if op.Error != nil {
-				fmt.Printf("ERROR: %s -> %s: %v\n", op.OriginalName, op.NewName, op.Error)
-			} else {
-				fmt.Printf("RENAME: %s\n", op.OriginalPath)
-				fmt.Printf("    TO: %s\n", op.NewPath)
-			}
+	printDetailedOperations(result.Operations, func(op renamer.RenameOperation) {
+		if op.Skipped {
+			fmt.Printf("SKIP: %s (%s)\n", op.OriginalName, op.SkipReason)
+		} else if op.Error != nil {
+			fmt.Printf("ERROR: %s -> %s: %v\n", op.OriginalName, op.NewName, op.Error)
+		} else {
+			fmt.Printf("RENAME: %s\n", op.OriginalPath)
+			fmt.Printf("    TO: %s\n", op.NewPath)
 		}
-		fmt.Println()
-	}
+	})
 
 	printSummary(
 		fmt.Sprintf("Total files:  %d", result.TotalFiles),
