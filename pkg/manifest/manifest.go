@@ -13,6 +13,7 @@ import (
 
 	"btidy/pkg/collector"
 	"btidy/pkg/hasher"
+	"btidy/pkg/safepath"
 )
 
 // ManifestEntry represents a single file in the manifest.
@@ -43,23 +44,26 @@ type GenerateOptions struct {
 
 // Generator creates manifests from directories.
 type Generator struct {
-	rootDir string
-	hasher  *hasher.Hasher
+	rootDir   string
+	validator *safepath.Validator
+	hasher    *hasher.Hasher
 }
 
 // NewGenerator creates a new manifest generator for the given directory.
 func NewGenerator(rootDir string, workers int) (*Generator, error) {
-	absPath, err := filepath.Abs(rootDir)
+	v, err := safepath.New(rootDir)
 	if err != nil {
-		return nil, fmt.Errorf("failed to resolve path: %w", err)
+		return nil, fmt.Errorf("failed to create path validator: %w", err)
 	}
 
-	info, err := os.Stat(absPath)
-	if err != nil {
-		return nil, fmt.Errorf("failed to access directory: %w", err)
-	}
-	if !info.IsDir() {
-		return nil, fmt.Errorf("%s is not a directory", absPath)
+	return NewGeneratorWithValidator(v, workers)
+}
+
+// NewGeneratorWithValidator creates a new manifest generator with an existing
+// path validator.
+func NewGeneratorWithValidator(validator *safepath.Validator, workers int) (*Generator, error) {
+	if validator == nil {
+		return nil, fmt.Errorf("validator is required")
 	}
 
 	opts := []hasher.Option{}
@@ -68,8 +72,9 @@ func NewGenerator(rootDir string, workers int) (*Generator, error) {
 	}
 
 	return &Generator{
-		rootDir: absPath,
-		hasher:  hasher.New(opts...),
+		rootDir:   validator.Root(),
+		validator: validator,
+		hasher:    hasher.New(opts...),
 	}, nil
 }
 

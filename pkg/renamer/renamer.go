@@ -58,9 +58,18 @@ func New(rootDir string, dryRun bool) (*Renamer, error) {
 		return nil, fmt.Errorf("failed to create path validator: %w", err)
 	}
 
+	return NewWithValidator(v, dryRun)
+}
+
+// NewWithValidator creates a new Renamer with an existing validator.
+func NewWithValidator(validator *safepath.Validator, dryRun bool) (*Renamer, error) {
+	if validator == nil {
+		return nil, fmt.Errorf("validator is required")
+	}
+
 	return &Renamer{
 		dryRun:    dryRun,
-		validator: v,
+		validator: validator,
 		hasher:    hasher.New(),
 	}, nil
 }

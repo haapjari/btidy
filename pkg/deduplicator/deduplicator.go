@@ -7,6 +7,7 @@
 package deduplicator
 
 import (
+	"errors"
 	"fmt"
 	"sort"
 
@@ -57,10 +58,19 @@ func NewWithWorkers(rootDir string, dryRun bool, workers int) (*Deduplicator, er
 		return nil, fmt.Errorf("failed to create path validator: %w", err)
 	}
 
+	return NewWithValidator(v, dryRun, workers)
+}
+
+// NewWithValidator creates a new Deduplicator with an existing validator.
+func NewWithValidator(validator *safepath.Validator, dryRun bool, workers int) (*Deduplicator, error) {
+	if validator == nil {
+		return nil, errors.New("validator is required")
+	}
+
 	return &Deduplicator{
-		rootDir:   rootDir,
+		rootDir:   validator.Root(),
 		dryRun:    dryRun,
-		validator: v,
+		validator: validator,
 		hasher:    hasher.New(hasher.WithWorkers(workers)),
 	}, nil
 }

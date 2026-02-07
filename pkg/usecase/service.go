@@ -4,7 +4,6 @@ package usecase
 import (
 	"fmt"
 	"os"
-	"path/filepath"
 	"time"
 
 	"btidy/pkg/collector"
@@ -12,6 +11,7 @@ import (
 	"btidy/pkg/flattener"
 	"btidy/pkg/manifest"
 	"btidy/pkg/renamer"
+	"btidy/pkg/safepath"
 )
 
 // Options configures a Service.
@@ -124,14 +124,14 @@ func (s *Service) RunDuplicate(req DuplicateRequest) (DuplicateExecution, error)
 
 // RunManifest executes the manifest workflow.
 func (s *Service) RunManifest(req ManifestRequest) (ManifestExecution, error) {
-	rootDir, err := resolveTargetDir(req.TargetDir)
+	target, err := resolveWorkflowTarget(req.TargetDir)
 	if err != nil {
 		return ManifestExecution{}, err
 	}
 
 	startTime := time.Now()
 
-	g, err := manifest.NewGenerator(rootDir, req.Workers)
+	g, err := manifest.NewGeneratorWithValidator(target.validator, req.Workers)
 	if err != nil {
 		return ManifestExecution{}, fmt.Errorf("failed to create manifest generator: %w", err)
 	}
@@ -149,7 +149,7 @@ func (s *Service) RunManifest(req ManifestRequest) (ManifestExecution, error) {
 	}
 
 	return ManifestExecution{
-		RootDir:    rootDir,
+		RootDir:    target.rootDir,
 		Duration:   time.Since(startTime),
 		Manifest:   generatedManifest,
 		OutputPath: req.OutputPath,
@@ -179,19 +179,25 @@ type fileWorkflowResult[T any] struct {
 	Result          T
 }
 
-func runFileWorkflow[T any](s *Service, targetDir string, execute func(rootDir string, files []collector.FileInfo) (T, error)) (fileWorkflowResult[T], error) {
-	rootDir, err := resolveTargetDir(targetDir)
+// Workflow invariant: no path is opened or mutated before validator approval.
+type workflowTarget struct {
+	rootDir   string
+	validator *safepath.Validator
+}
+
+func runFileWorkflow[T any](s *Service, targetDir string, execute func(rootDir string, validator *safepath.Validator, files []collector.FileInfo) (T, error)) (fileWorkflowResult[T], error) {
+	target, err := resolveWorkflowTarget(targetDir)
 	if err != nil {
 		return fileWorkflowResult[T]{}, err
 	}
 
-	files, collectDuration, err := s.collectFiles(rootDir)
+	files, collectDuration, err := s.collectFiles(target.rootDir)
 	if err != nil {
 		return fileWorkflowResult[T]{}, fmt.Errorf("failed to collect files: %w", err)
 	}
 
 	workflowResult := fileWorkflowResult[T]{
-		RootDir:         rootDir,
+		RootDir:         target.rootDir,
 		FileCount:       len(files),
 		CollectDuration: collectDuration,
 	}
@@ -199,7 +205,7 @@ func runFileWorkflow[T any](s *Service, targetDir string, execute func(rootDir s
 		return workflowResult, nil
 	}
 
-	operationResult, err := execute(rootDir, files)
+	operationResult, err := execute(target.rootDir, target.validator, files)
 	if err != nil {
 		return fileWorkflowResult[T]{}, err
 	}
@@ -209,9 +215,9 @@ func runFileWorkflow[T any](s *Service, targetDir string, execute func(rootDir s
 	return workflowResult, nil
 }
 
-func renameExecutor(dryRun bool) func(rootDir string, files []collector.FileInfo) (renamer.Result, error) {
-	return func(rootDir string, files []collector.FileInfo) (renamer.Result, error) {
-		r, err := renamer.New(rootDir, dryRun)
+func renameExecutor(dryRun bool) func(rootDir string, validator *safepath.Validator, files []collector.FileInfo) (renamer.Result, error) {
+	return func(_ string, validator *safepath.Validator, files []collector.FileInfo) (renamer.Result, error) {
+		r, err := renamer.NewWithValidator(validator, dryRun)
 		if err != nil {
 			return renamer.Result{}, fmt.Errorf("failed to create renamer: %w", err)
 		}
@@ -220,9 +226,9 @@ func renameExecutor(dryRun bool) func(rootDir string, files []collector.FileInfo
 	}
 }
 
-func flattenExecutor(dryRun bool, workers int) func(rootDir string, files []collector.FileInfo) (flattener.Result, error) {
-	return func(rootDir string, files []collector.FileInfo) (flattener.Result, error) {
-		f, err := flattener.NewWithWorkers(rootDir, dryRun, workers)
+func flattenExecutor(dryRun bool, workers int) func(rootDir string, validator *safepath.Validator, files []collector.FileInfo) (flattener.Result, error) {
+	return func(_ string, validator *safepath.Validator, files []collector.FileInfo) (flattener.Result, error) {
+		f, err := flattener.NewWithValidator(validator, dryRun, workers)
 		if err != nil {
 			return flattener.Result{}, fmt.Errorf("failed to create flattener: %w", err)
 		}
@@ -231,9 +237,9 @@ func flattenExecutor(dryRun bool, workers int) func(rootDir string, files []coll
 	}
 }
 
-func duplicateExecutor(dryRun bool, workers int) func(rootDir string, files []collector.FileInfo) (deduplicator.Result, error) {
-	return func(rootDir string, files []collector.FileInfo) (deduplicator.Result, error) {
-		d, err := deduplicator.NewWithWorkers(rootDir, dryRun, workers)
+func duplicateExecutor(dryRun bool, workers int) func(rootDir string, validator *safepath.Validator, files []collector.FileInfo) (deduplicator.Result, error) {
+	return func(_ string, validator *safepath.Validator, files []collector.FileInfo) (deduplicator.Result, error) {
+		d, err := deduplicator.NewWithValidator(validator, dryRun, workers)
 		if err != nil {
 			return deduplicator.Result{}, fmt.Errorf("failed to create deduplicator: %w", err)
 		}
@@ -273,19 +279,22 @@ func (s *Service) skipFileList() []string {
 	return append([]string(nil), s.skipFiles...)
 }
 
-func resolveTargetDir(targetDir string) (string, error) {
+func resolveWorkflowTarget(targetDir string) (workflowTarget, error) {
 	info, err := os.Stat(targetDir)
 	if err != nil {
-		return "", fmt.Errorf("cannot access directory: %w", err)
+		return workflowTarget{}, fmt.Errorf("cannot access directory: %w", err)
 	}
 	if !info.IsDir() {
-		return "", fmt.Errorf("%s is not a directory", targetDir)
+		return workflowTarget{}, fmt.Errorf("%s is not a directory", targetDir)
 	}
 
-	absPath, err := filepath.Abs(targetDir)
+	validator, err := safepath.New(targetDir)
 	if err != nil {
-		return "", fmt.Errorf("cannot resolve path: %w", err)
+		return workflowTarget{}, fmt.Errorf("cannot create path validator: %w", err)
 	}
 
-	return absPath, nil
+	return workflowTarget{
+		rootDir:   validator.Root(),
+		validator: validator,
+	}, nil
 }
