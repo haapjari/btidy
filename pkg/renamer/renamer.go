@@ -77,22 +77,29 @@ func NewWithValidator(validator *safepath.Validator, dryRun bool) (*Renamer, err
 // RenameFiles renames all files in the given list according to the naming conventions.
 // Files are renamed in place (same directory).
 func (r *Renamer) RenameFiles(files []collector.FileInfo) Result {
+	return r.RenameFilesWithProgress(files, nil)
+}
+
+// RenameFilesWithProgress renames files and reports per-file progress.
+func (r *Renamer) RenameFilesWithProgress(files []collector.FileInfo, onProgress func(processed, total int)) Result {
 	result := Result{
 		TotalFiles: len(files),
 		Operations: make([]RenameOperation, 0, len(files)),
 	}
+	totalFiles := len(files)
 
 	invalidReadOps := r.collectInvalidSourceReadOps(files)
 	if len(invalidReadOps) > 0 {
 		result.Operations = append(result.Operations, invalidReadOps...)
 		result.ErrorCount = len(invalidReadOps)
+		reportProgress(onProgress, totalFiles, totalFiles)
 		return result
 	}
 
 	// Track new names within each directory to handle conflicts and duplicates
 	dirNames := make(map[string]map[string]nameUsage) // dir -> name -> usage
 
-	for _, f := range files {
+	for i, f := range files {
 		op := r.processFile(f, dirNames)
 		result.Operations = append(result.Operations, op)
 
@@ -105,9 +112,26 @@ func (r *Renamer) RenameFiles(files []collector.FileInfo) Result {
 		} else {
 			result.RenamedCount++
 		}
+
+		reportProgress(onProgress, i+1, totalFiles)
 	}
 
 	return result
+}
+
+func reportProgress(onProgress func(processed, total int), processed, total int) {
+	if onProgress == nil || total <= 0 {
+		return
+	}
+
+	if processed < 0 {
+		processed = 0
+	}
+	if processed > total {
+		processed = total
+	}
+
+	onProgress(processed, total)
 }
 
 func (r *Renamer) collectInvalidSourceReadOps(files []collector.FileInfo) []RenameOperation {

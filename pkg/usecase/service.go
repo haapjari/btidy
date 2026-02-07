@@ -20,6 +20,10 @@ type Options struct {
 	SkipFiles []string
 }
 
+// ProgressCallback receives workflow stage progress updates.
+// Stage names are command-specific and intended for user-facing progress output.
+type ProgressCallback func(stage string, processed, total int)
+
 // Service orchestrates command workflows without Cobra dependencies.
 type Service struct {
 	skipFiles []string
@@ -34,8 +38,9 @@ func New(opts Options) *Service {
 
 // RenameRequest contains inputs for the rename workflow.
 type RenameRequest struct {
-	TargetDir string
-	DryRun    bool
+	TargetDir  string
+	DryRun     bool
+	OnProgress ProgressCallback
 }
 
 // RenameExecution contains rename workflow outputs.
@@ -48,9 +53,10 @@ type RenameExecution struct {
 
 // FlattenRequest contains inputs for the flatten workflow.
 type FlattenRequest struct {
-	TargetDir string
-	DryRun    bool
-	Workers   int
+	TargetDir  string
+	DryRun     bool
+	Workers    int
+	OnProgress ProgressCallback
 }
 
 // FlattenExecution contains flatten workflow outputs.
@@ -63,9 +69,10 @@ type FlattenExecution struct {
 
 // DuplicateRequest contains inputs for the duplicate workflow.
 type DuplicateRequest struct {
-	TargetDir string
-	DryRun    bool
-	Workers   int
+	TargetDir  string
+	DryRun     bool
+	Workers    int
+	OnProgress ProgressCallback
 }
 
 // DuplicateExecution contains duplicate workflow outputs.
@@ -81,7 +88,7 @@ type ManifestRequest struct {
 	TargetDir  string
 	OutputPath string
 	Workers    int
-	OnProgress manifest.ProgressCallback
+	OnProgress ProgressCallback
 }
 
 // ManifestExecution contains manifest workflow outputs.
@@ -95,7 +102,7 @@ type ManifestExecution struct {
 
 // RunRename executes the rename workflow.
 func (s *Service) RunRename(req RenameRequest) (RenameExecution, error) {
-	workflowResult, err := runFileWorkflow(s, req.TargetDir, renameExecutor(req.DryRun))
+	workflowResult, err := runFileWorkflow(s, req.TargetDir, renameExecutor(req.DryRun, req.OnProgress))
 	if err != nil {
 		return RenameExecution{}, err
 	}
@@ -117,7 +124,7 @@ func (s *Service) RunRename(req RenameRequest) (RenameExecution, error) {
 
 // RunFlatten executes the flatten workflow.
 func (s *Service) RunFlatten(req FlattenRequest) (FlattenExecution, error) {
-	workflowResult, err := runFileWorkflow(s, req.TargetDir, flattenExecutor(req.DryRun, req.Workers))
+	workflowResult, err := runFileWorkflow(s, req.TargetDir, flattenExecutor(req.DryRun, req.Workers, req.OnProgress))
 	if err != nil {
 		return FlattenExecution{}, err
 	}
@@ -139,7 +146,7 @@ func (s *Service) RunFlatten(req FlattenRequest) (FlattenExecution, error) {
 
 // RunDuplicate executes the duplicate workflow.
 func (s *Service) RunDuplicate(req DuplicateRequest) (DuplicateExecution, error) {
-	workflowResult, err := runFileWorkflow(s, req.TargetDir, duplicateExecutor(req.DryRun, req.Workers))
+	workflowResult, err := runFileWorkflow(s, req.TargetDir, duplicateExecutor(req.DryRun, req.Workers, req.OnProgress))
 	if err != nil {
 		return DuplicateExecution{}, err
 	}
@@ -179,8 +186,10 @@ func (s *Service) RunManifest(req ManifestRequest) (ManifestExecution, error) {
 	}
 
 	generatedManifest, err := g.Generate(manifest.GenerateOptions{
-		SkipFiles:  s.skipFileList(),
-		OnProgress: req.OnProgress,
+		SkipFiles: s.skipFileList(),
+		OnProgress: func(processed, total int, _ string) {
+			emitProgress(req.OnProgress, "hashing", processed, total)
+		},
 	})
 	if err != nil {
 		return ManifestExecution{}, fmt.Errorf("failed to generate manifest: %w", err)
@@ -257,37 +266,58 @@ func runFileWorkflow[T any](s *Service, targetDir string, execute func(rootDir s
 	return workflowResult, nil
 }
 
-func renameExecutor(dryRun bool) func(rootDir string, validator *safepath.Validator, files []collector.FileInfo) (renamer.Result, error) {
+func renameExecutor(dryRun bool, onProgress ProgressCallback) func(rootDir string, validator *safepath.Validator, files []collector.FileInfo) (renamer.Result, error) {
 	return func(_ string, validator *safepath.Validator, files []collector.FileInfo) (renamer.Result, error) {
 		r, err := renamer.NewWithValidator(validator, dryRun)
 		if err != nil {
 			return renamer.Result{}, fmt.Errorf("failed to create renamer: %w", err)
 		}
 
-		return r.RenameFiles(files), nil
+		return r.RenameFilesWithProgress(files, func(processed, total int) {
+			emitProgress(onProgress, "renaming", processed, total)
+		}), nil
 	}
 }
 
-func flattenExecutor(dryRun bool, workers int) func(rootDir string, validator *safepath.Validator, files []collector.FileInfo) (flattener.Result, error) {
+func flattenExecutor(dryRun bool, workers int, onProgress ProgressCallback) func(rootDir string, validator *safepath.Validator, files []collector.FileInfo) (flattener.Result, error) {
 	return func(_ string, validator *safepath.Validator, files []collector.FileInfo) (flattener.Result, error) {
 		f, err := flattener.NewWithValidator(validator, dryRun, workers)
 		if err != nil {
 			return flattener.Result{}, fmt.Errorf("failed to create flattener: %w", err)
 		}
 
-		return f.FlattenFiles(files), nil
+		return f.FlattenFilesWithProgress(files, func(stage string, processed, total int) {
+			emitProgress(onProgress, stage, processed, total)
+		}), nil
 	}
 }
 
-func duplicateExecutor(dryRun bool, workers int) func(rootDir string, validator *safepath.Validator, files []collector.FileInfo) (deduplicator.Result, error) {
+func duplicateExecutor(dryRun bool, workers int, onProgress ProgressCallback) func(rootDir string, validator *safepath.Validator, files []collector.FileInfo) (deduplicator.Result, error) {
 	return func(_ string, validator *safepath.Validator, files []collector.FileInfo) (deduplicator.Result, error) {
 		d, err := deduplicator.NewWithValidator(validator, dryRun, workers)
 		if err != nil {
 			return deduplicator.Result{}, fmt.Errorf("failed to create deduplicator: %w", err)
 		}
 
-		return d.FindDuplicates(files), nil
+		return d.FindDuplicatesWithProgress(files, func(stage string, processed, total int) {
+			emitProgress(onProgress, stage, processed, total)
+		}), nil
 	}
+}
+
+func emitProgress(onProgress ProgressCallback, stage string, processed, total int) {
+	if onProgress == nil || total <= 0 {
+		return
+	}
+
+	if processed < 0 {
+		processed = 0
+	}
+	if processed > total {
+		processed = total
+	}
+
+	onProgress(stage, processed, total)
 }
 
 func (s *Service) skipFileList() []string {

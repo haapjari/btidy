@@ -42,6 +42,11 @@ type Flattener struct {
 	hasher    *hasher.Hasher
 }
 
+const (
+	progressStageHashing = "hashing"
+	progressStageMoving  = "moving"
+)
+
 // New creates a new Flattener with path containment validation.
 func New(rootDir string, dryRun bool) (*Flattener, error) {
 	return NewWithWorkers(rootDir, dryRun, 0)
@@ -74,6 +79,11 @@ func NewWithValidator(validator *safepath.Validator, dryRun bool, workers int) (
 // FlattenFiles moves all files to root directory, removing duplicates.
 // Duplicates are identified by SHA256 content hash - this is safe and reliable.
 func (f *Flattener) FlattenFiles(files []collector.FileInfo) Result {
+	return f.FlattenFilesWithProgress(files, nil)
+}
+
+// FlattenFilesWithProgress moves files and reports stage progress.
+func (f *Flattener) FlattenFilesWithProgress(files []collector.FileInfo, onProgress func(stage string, processed, total int)) Result {
 	result := Result{
 		TotalFiles: len(files),
 		Operations: make([]MoveOperation, 0, len(files)),
@@ -84,7 +94,9 @@ func (f *Flattener) FlattenFiles(files []collector.FileInfo) Result {
 	}
 
 	// Step 1: Pre-compute hashes for all files using parallel hashing.
-	fileHashes, invalidReadErrors := f.computeHashes(files)
+	fileHashes, invalidReadErrors := f.computeHashes(files, func(processed, total int) {
+		emitProgress(onProgress, progressStageHashing, processed, total)
+	})
 	if len(invalidReadErrors) > 0 {
 		for i := range files {
 			pathErr, hasErr := invalidReadErrors[files[i].Path]
@@ -109,6 +121,7 @@ func (f *Flattener) FlattenFiles(files []collector.FileInfo) Result {
 	// Track name conflicts (same name but different content).
 	nameCount := make(map[string]int)
 
+	totalFiles := len(files)
 	for i := range files {
 		hash := fileHashes[files[i].Path]
 		op := f.processFile(&files[i], hash, seenHash, nameCount)
@@ -123,6 +136,8 @@ func (f *Flattener) FlattenFiles(files []collector.FileInfo) Result {
 		} else {
 			result.MovedCount++
 		}
+
+		emitProgress(onProgress, progressStageMoving, i+1, totalFiles)
 	}
 
 	// Remove empty directories if not dry run.
@@ -134,7 +149,7 @@ func (f *Flattener) FlattenFiles(files []collector.FileInfo) Result {
 }
 
 // computeHashes pre-computes SHA256 hashes for all files using parallel hashing.
-func (f *Flattener) computeHashes(files []collector.FileInfo) (map[string]string, map[string]error) {
+func (f *Flattener) computeHashes(files []collector.FileInfo, onProgress func(processed, total int)) (map[string]string, map[string]error) {
 	hashes := make(map[string]string, len(files))
 	invalidReadErrors := make(map[string]error)
 
@@ -153,7 +168,12 @@ func (f *Flattener) computeHashes(files []collector.FileInfo) (map[string]string
 	}
 
 	// Hash files in parallel.
+	processed := 0
+	total := len(toHash)
 	for result := range f.hasher.HashFilesWithSizes(toHash) {
+		processed++
+		reportProgress(onProgress, processed, total)
+
 		if result.Error == nil {
 			hashes[result.Path] = result.Hash
 		}
@@ -280,4 +300,34 @@ func (f *Flattener) DryRun() bool {
 // Root returns the root directory being validated against.
 func (f *Flattener) Root() string {
 	return f.validator.Root()
+}
+
+func emitProgress(onProgress func(stage string, processed, total int), stage string, processed, total int) {
+	if onProgress == nil || total <= 0 {
+		return
+	}
+
+	if processed < 0 {
+		processed = 0
+	}
+	if processed > total {
+		processed = total
+	}
+
+	onProgress(stage, processed, total)
+}
+
+func reportProgress(onProgress func(processed, total int), processed, total int) {
+	if onProgress == nil || total <= 0 {
+		return
+	}
+
+	if processed < 0 {
+		processed = 0
+	}
+	if processed > total {
+		processed = total
+	}
+
+	onProgress(processed, total)
 }

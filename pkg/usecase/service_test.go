@@ -19,10 +19,16 @@ func TestService_RunRename_DryRun(t *testing.T) {
 	modTime := time.Date(2018, 6, 15, 12, 0, 0, 0, time.UTC)
 	testutil.CreateFileWithModTime(t, filepath.Join(tmpDir, "My Document.pdf"), "content", modTime)
 
+	progressCalls := 0
+	lastStage := ""
 	s := New(Options{})
 	execution, err := s.RunRename(RenameRequest{
 		TargetDir: tmpDir,
 		DryRun:    true,
+		OnProgress: func(stage string, _, _ int) {
+			progressCalls++
+			lastStage = stage
+		},
 	})
 	require.NoError(t, err)
 
@@ -31,6 +37,8 @@ func TestService_RunRename_DryRun(t *testing.T) {
 	assert.Equal(t, 1, execution.Result.TotalFiles)
 	assert.Equal(t, 1, execution.Result.RenamedCount)
 	assert.Equal(t, 0, execution.Result.ErrorCount)
+	assert.GreaterOrEqual(t, progressCalls, 1)
+	assert.NotEmpty(t, lastStage)
 
 	_, err = os.Stat(filepath.Join(tmpDir, "My Document.pdf"))
 	require.NoError(t, err, "dry-run must not rename files")
@@ -46,11 +54,17 @@ func TestService_RunFlatten_DryRun(t *testing.T) {
 	modTime := time.Date(2018, 6, 15, 12, 0, 0, 0, time.UTC)
 	testutil.CreateFileWithModTime(t, filepath.Join(tmpDir, "nested", "file.txt"), "content", modTime)
 
+	progressCalls := 0
+	lastStage := ""
 	s := New(Options{})
 	execution, err := s.RunFlatten(FlattenRequest{
 		TargetDir: tmpDir,
 		DryRun:    true,
 		Workers:   3,
+		OnProgress: func(stage string, _, _ int) {
+			progressCalls++
+			lastStage = stage
+		},
 	})
 	require.NoError(t, err)
 
@@ -59,6 +73,8 @@ func TestService_RunFlatten_DryRun(t *testing.T) {
 	assert.Equal(t, 1, execution.Result.TotalFiles)
 	assert.Equal(t, 1, execution.Result.MovedCount)
 	assert.Equal(t, 0, execution.Result.ErrorCount)
+	assert.GreaterOrEqual(t, progressCalls, 1)
+	assert.NotEmpty(t, lastStage)
 
 	_, err = os.Stat(filepath.Join(tmpDir, "nested", "file.txt"))
 	require.NoError(t, err, "dry-run must not move files")
@@ -75,11 +91,17 @@ func TestService_RunDuplicate_DryRun(t *testing.T) {
 	testutil.CreateFileWithModTime(t, filepath.Join(tmpDir, "a.txt"), "same-content", modTime)
 	testutil.CreateFileWithModTime(t, filepath.Join(tmpDir, "b.txt"), "same-content", modTime)
 
+	progressCalls := 0
+	lastStage := ""
 	s := New(Options{})
 	execution, err := s.RunDuplicate(DuplicateRequest{
 		TargetDir: tmpDir,
 		DryRun:    true,
 		Workers:   3,
+		OnProgress: func(stage string, _, _ int) {
+			progressCalls++
+			lastStage = stage
+		},
 	})
 	require.NoError(t, err)
 
@@ -89,6 +111,8 @@ func TestService_RunDuplicate_DryRun(t *testing.T) {
 	assert.Equal(t, 1, execution.Result.DuplicatesFound)
 	assert.Equal(t, 1, execution.Result.DeletedCount)
 	assert.Equal(t, 0, execution.Result.ErrorCount)
+	assert.GreaterOrEqual(t, progressCalls, 1)
+	assert.NotEmpty(t, lastStage)
 
 	_, err = os.Stat(filepath.Join(tmpDir, "a.txt"))
 	require.NoError(t, err, "dry-run must not delete files")
@@ -112,7 +136,7 @@ func TestService_RunManifest_WithSkipFiles(t *testing.T) {
 		TargetDir:  tmpDir,
 		OutputPath: outputPath,
 		Workers:    2,
-		OnProgress: func(_, _ int, _ string) {
+		OnProgress: func(_ string, _, _ int) {
 			progressCalls++
 		},
 	})

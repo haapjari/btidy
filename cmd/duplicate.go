@@ -37,11 +37,14 @@ func runDuplicate(_ *cobra.Command, args []string) error {
 	execution, empty, err := runFileCommand(
 		"DUPLICATE",
 		false,
-		func() (usecase.DuplicateExecution, error) {
+		func(progress *progressReporter) (usecase.DuplicateExecution, error) {
 			return newUseCaseService().RunDuplicate(usecase.DuplicateRequest{
 				TargetDir: args[0],
 				DryRun:    dryRun,
 				Workers:   workers,
+				OnProgress: func(stage string, processed, total int) {
+					progress.Report(stage, processed, total)
+				},
 			})
 		},
 		func(execution usecase.DuplicateExecution) fileCommandExecutionInfo {

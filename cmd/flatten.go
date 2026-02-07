@@ -43,11 +43,14 @@ func runFlatten(_ *cobra.Command, args []string) error {
 	execution, empty, err := runFileCommand(
 		"FLATTEN",
 		true,
-		func() (usecase.FlattenExecution, error) {
+		func(progress *progressReporter) (usecase.FlattenExecution, error) {
 			return newUseCaseService().RunFlatten(usecase.FlattenRequest{
 				TargetDir: args[0],
 				DryRun:    dryRun,
 				Workers:   workers,
+				OnProgress: func(stage string, processed, total int) {
+					progress.Report(stage, processed, total)
+				},
 			})
 		},
 		func(execution usecase.FlattenExecution) fileCommandExecutionInfo {

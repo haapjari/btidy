@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"os"
+	"strings"
 	"sync"
 	"time"
 
@@ -55,7 +56,7 @@ type fileCommandExecutionInfo struct {
 func runFileCommand[T any](
 	command string,
 	trailingBlankLine bool,
-	execute func() (T, error),
+	execute func(progress *progressReporter) (T, error),
 	executionInfo func(T) fileCommandExecutionInfo,
 	printExtraHeader func(),
 ) (execution T, empty bool, err error) {
@@ -63,7 +64,7 @@ func runFileCommand[T any](
 	printCollectingFiles()
 
 	progress := startProgress("Working")
-	execution, err = execute()
+	execution, err = execute(progress)
 	progress.Stop()
 	if err != nil {
 		return execution, false, err
@@ -134,32 +135,133 @@ type progressReporter struct {
 	stopOnce sync.Once
 	stopCh   chan struct{}
 	doneCh   chan struct{}
+
+	mu             sync.Mutex
+	label          string
+	stage          string
+	startTime      time.Time
+	lastPrintTime  time.Time
+	lastProcessed  int
+	lastTotal      int
+	hasDeterminate bool
 }
+
+const (
+	progressHeartbeatInterval = 5 * time.Second
+	progressPrintInterval     = time.Second
+	progressBarWidth          = 24
+)
 
 func startProgress(label string) *progressReporter {
 	p := &progressReporter{
 		stopCh: make(chan struct{}),
 		doneCh: make(chan struct{}),
+		label:  label,
+		stage:  label,
 	}
 
-	startTime := time.Now()
-	ticker := time.NewTicker(5 * time.Second)
+	p.startTime = time.Now()
+	ticker := time.NewTicker(progressHeartbeatInterval)
 
 	go func() {
 		defer close(p.doneCh)
+		defer ticker.Stop()
+
 		for {
 			select {
 			case <-ticker.C:
-				elapsed := time.Since(startTime).Round(time.Second)
-				fmt.Fprintf(os.Stderr, "%s... %s elapsed\n", label, elapsed)
+				p.printHeartbeat()
 			case <-p.stopCh:
-				ticker.Stop()
 				return
 			}
 		}
 	}()
 
 	return p
+}
+
+func (p *progressReporter) Report(stage string, processed, total int) {
+	if total <= 0 {
+		return
+	}
+
+	if processed < 0 {
+		processed = 0
+	}
+	if processed > total {
+		processed = total
+	}
+
+	now := time.Now()
+	stageLabel := p.normalizedStage(stage)
+
+	p.mu.Lock()
+	changed := !p.hasDeterminate || stageLabel != p.stage || processed != p.lastProcessed || total != p.lastTotal
+	p.stage = stageLabel
+	p.lastProcessed = processed
+	p.lastTotal = total
+	p.hasDeterminate = true
+
+	if !changed {
+		p.mu.Unlock()
+		return
+	}
+
+	if processed < total && now.Sub(p.lastPrintTime) < progressPrintInterval {
+		p.mu.Unlock()
+		return
+	}
+
+	p.lastPrintTime = now
+	line := renderProgressLine(stageLabel, processed, total, time.Since(p.startTime).Round(time.Second))
+	p.mu.Unlock()
+
+	fmt.Fprintln(os.Stderr, line)
+}
+
+func (p *progressReporter) printHeartbeat() {
+	p.mu.Lock()
+	elapsed := time.Since(p.startTime).Round(time.Second)
+
+	if p.hasDeterminate {
+		if p.lastTotal <= 0 || p.lastProcessed >= p.lastTotal {
+			p.mu.Unlock()
+			return
+		}
+
+		line := renderProgressLine(p.stage, p.lastProcessed, p.lastTotal, elapsed)
+		p.mu.Unlock()
+		fmt.Fprintln(os.Stderr, line)
+		return
+	}
+
+	label := p.label
+	p.mu.Unlock()
+
+	fmt.Fprintf(os.Stderr, "%s... %s elapsed\n", label, elapsed)
+}
+
+func (p *progressReporter) normalizedStage(stage string) string {
+	stage = strings.TrimSpace(stage)
+	if stage == "" {
+		return p.label
+	}
+
+	return stage
+}
+
+func renderProgressLine(stage string, processed, total int, elapsed time.Duration) string {
+	percentage := processed * 100 / total
+	filled := processed * progressBarWidth / total
+	if filled < 0 {
+		filled = 0
+	}
+	if filled > progressBarWidth {
+		filled = progressBarWidth
+	}
+
+	bar := strings.Repeat("#", filled) + strings.Repeat("-", progressBarWidth-filled)
+	return fmt.Sprintf("%s [%s] %3d%% (%d/%d) elapsed %s", stage, bar, percentage, processed, total, elapsed)
 }
 
 func (p *progressReporter) Stop() {

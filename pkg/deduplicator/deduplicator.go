@@ -45,6 +45,11 @@ type Deduplicator struct {
 	hasher    *hasher.Hasher
 }
 
+const (
+	progressStageHashing  = "hashing"
+	progressStageDeleting = "deleting"
+)
+
 // New creates a new Deduplicator with path containment validation.
 func New(rootDir string, dryRun bool) (*Deduplicator, error) {
 	return NewWithWorkers(rootDir, dryRun, 0)
@@ -84,6 +89,11 @@ type DuplicateGroup struct {
 // FindDuplicates analyzes files and identifies duplicates using content hashing.
 // Returns a Result containing all duplicate files that should be deleted.
 func (d *Deduplicator) FindDuplicates(files []collector.FileInfo) Result {
+	return d.FindDuplicatesWithProgress(files, nil)
+}
+
+// FindDuplicatesWithProgress analyzes files and reports stage progress.
+func (d *Deduplicator) FindDuplicatesWithProgress(files []collector.FileInfo, onProgress func(stage string, processed, total int)) Result {
 	result := Result{
 		TotalFiles: len(files),
 		Operations: make([]DeleteOperation, 0),
@@ -112,11 +122,19 @@ func (d *Deduplicator) FindDuplicates(files []collector.FileInfo) Result {
 			continue
 		}
 
-		duplicateGroups := d.findDuplicatesInSizeGroup(group)
+		duplicateGroups := d.findDuplicatesInSizeGroup(group, onProgress)
+		deleteTotal := 0
+		for i := range duplicateGroups {
+			deleteTotal += len(duplicateGroups[i].Dupes)
+		}
+
+		deleteProcessed := 0
 		for i := range duplicateGroups {
 			for j := range duplicateGroups[i].Dupes {
 				op := d.deleteFile(duplicateGroups[i].Dupes[j], duplicateGroups[i].Keep.Path, duplicateGroups[i].Hash)
 				result.Operations = append(result.Operations, op)
+				deleteProcessed++
+				emitProgress(onProgress, progressStageDeleting, deleteProcessed, deleteTotal)
 			}
 		}
 	}
@@ -179,7 +197,7 @@ func groupBySize(files []collector.FileInfo) map[int64][]collector.FileInfo {
 }
 
 // findDuplicatesInSizeGroup finds duplicates among files of the same size.
-func (d *Deduplicator) findDuplicatesInSizeGroup(files []collector.FileInfo) []DuplicateGroup {
+func (d *Deduplicator) findDuplicatesInSizeGroup(files []collector.FileInfo, onProgress func(stage string, processed, total int)) []DuplicateGroup {
 	if len(files) < 2 {
 		return nil
 	}
@@ -188,22 +206,22 @@ func (d *Deduplicator) findDuplicatesInSizeGroup(files []collector.FileInfo) []D
 
 	// For small files, go straight to full hash.
 	if size <= hasher.SmallFileThreshold {
-		return d.findDuplicatesByFullHash(files)
+		return d.findDuplicatesByFullHash(files, onProgress)
 	}
 
 	// For larger files, use partial hash first.
-	return d.findDuplicatesByPartialThenFullHash(files)
+	return d.findDuplicatesByPartialThenFullHash(files, onProgress)
 }
 
 // findDuplicatesByFullHash groups files by their full SHA256 hash.
-func (d *Deduplicator) findDuplicatesByFullHash(files []collector.FileInfo) []DuplicateGroup {
-	return buildDuplicateGroups(d.groupFilesByHash(files, d.hasher.HashFilesWithSizes))
+func (d *Deduplicator) findDuplicatesByFullHash(files []collector.FileInfo, onProgress func(stage string, processed, total int)) []DuplicateGroup {
+	return buildDuplicateGroups(d.groupFilesByHash(files, d.hasher.HashFilesWithSizes, progressStageHashing, onProgress))
 }
 
 // findDuplicatesByPartialThenFullHash uses partial hash for initial grouping,
 // then confirms with full hash.
-func (d *Deduplicator) findDuplicatesByPartialThenFullHash(files []collector.FileInfo) []DuplicateGroup {
-	partialGroups := d.groupFilesByHash(files, d.hasher.HashPartialFilesWithSizes)
+func (d *Deduplicator) findDuplicatesByPartialThenFullHash(files []collector.FileInfo, onProgress func(stage string, processed, total int)) []DuplicateGroup {
+	partialGroups := d.groupFilesByHash(files, d.hasher.HashPartialFilesWithSizes, progressStageHashing, onProgress)
 
 	// Second pass: for groups with multiple files, confirm with full hash.
 	var result []DuplicateGroup
@@ -212,14 +230,14 @@ func (d *Deduplicator) findDuplicatesByPartialThenFullHash(files []collector.Fil
 			continue
 		}
 		// These files have matching partial hash - compute full hash to confirm.
-		confirmed := d.findDuplicatesByFullHash(group)
+		confirmed := d.findDuplicatesByFullHash(group, onProgress)
 		result = append(result, confirmed...)
 	}
 
 	return result
 }
 
-func (d *Deduplicator) groupFilesByHash(files []collector.FileInfo, hashFn func([]hasher.FileToHash) <-chan hasher.HashResult) map[string][]collector.FileInfo {
+func (d *Deduplicator) groupFilesByHash(files []collector.FileInfo, hashFn func([]hasher.FileToHash) <-chan hasher.HashResult, stage string, onProgress func(stage string, processed, total int)) map[string][]collector.FileInfo {
 	hashGroups := make(map[string][]collector.FileInfo)
 	toHash := make([]hasher.FileToHash, 0, len(files))
 	fileByPath := make(map[string]collector.FileInfo, len(files))
@@ -232,7 +250,12 @@ func (d *Deduplicator) groupFilesByHash(files []collector.FileInfo, hashFn func(
 		})
 	}
 
+	processed := 0
+	total := len(files)
 	for result := range hashFn(toHash) {
+		processed++
+		emitProgress(onProgress, stage, processed, total)
+
 		if result.Error != nil {
 			continue
 		}
@@ -311,4 +334,19 @@ func (d *Deduplicator) Root() string {
 func ComputeFileHash(path string) (string, error) {
 	h := hasher.New()
 	return h.ComputeHash(path)
+}
+
+func emitProgress(onProgress func(stage string, processed, total int), stage string, processed, total int) {
+	if onProgress == nil || total <= 0 {
+		return
+	}
+
+	if processed < 0 {
+		processed = 0
+	}
+	if processed > total {
+		processed = total
+	}
+
+	onProgress(stage, processed, total)
 }

@@ -49,19 +49,15 @@ Typical safe workflow:
 }
 
 func runManifest(args []string, outputPath string) error {
-	progress := startProgress("Hashing")
+	progress := startProgress("Working")
 	fmt.Println("Collecting files and computing hashes...")
 
-	var lastProgress int
 	execution, err := newUseCaseService().RunManifest(usecase.ManifestRequest{
 		TargetDir:  args[0],
 		OutputPath: outputPath,
 		Workers:    workers,
-		OnProgress: func(processed, total int, _ string) {
-			if verbose && processed%100 == 0 && processed != lastProgress {
-				lastProgress = processed
-				fmt.Printf("Progress: %d / %d files\n", processed, total)
-			}
+		OnProgress: func(stage string, processed, total int) {
+			progress.Report(stage, processed, total)
 		},
 	})
 	progress.Stop()

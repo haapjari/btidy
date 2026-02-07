@@ -35,10 +35,13 @@ func runRename(_ *cobra.Command, args []string) error {
 	execution, empty, err := runFileCommand(
 		"RENAME",
 		true,
-		func() (usecase.RenameExecution, error) {
+		func(progress *progressReporter) (usecase.RenameExecution, error) {
 			return newUseCaseService().RunRename(usecase.RenameRequest{
 				TargetDir: args[0],
 				DryRun:    dryRun,
+				OnProgress: func(stage string, processed, total int) {
+					progress.Report(stage, processed, total)
+				},
 			})
 		},
 		func(execution usecase.RenameExecution) fileCommandExecutionInfo {
