@@ -129,6 +129,11 @@ func (s *Service) RunManifest(req ManifestRequest) (ManifestExecution, error) {
 		return ManifestExecution{}, err
 	}
 
+	resolvedOutputPath, err := resolveManifestOutputPath(target, req.OutputPath)
+	if err != nil {
+		return ManifestExecution{}, err
+	}
+
 	startTime := time.Now()
 
 	g, err := manifest.NewGeneratorWithValidator(target.validator, req.Workers)
@@ -144,7 +149,7 @@ func (s *Service) RunManifest(req ManifestRequest) (ManifestExecution, error) {
 		return ManifestExecution{}, fmt.Errorf("failed to generate manifest: %w", err)
 	}
 
-	if err := generatedManifest.Save(req.OutputPath); err != nil {
+	if err := generatedManifest.Save(resolvedOutputPath); err != nil {
 		return ManifestExecution{}, fmt.Errorf("failed to save manifest: %w", err)
 	}
 
@@ -152,7 +157,7 @@ func (s *Service) RunManifest(req ManifestRequest) (ManifestExecution, error) {
 		RootDir:    target.rootDir,
 		Duration:   time.Since(startTime),
 		Manifest:   generatedManifest,
-		OutputPath: req.OutputPath,
+		OutputPath: resolvedOutputPath,
 		Workers:    req.Workers,
 	}, nil
 }
@@ -297,4 +302,17 @@ func resolveWorkflowTarget(targetDir string) (workflowTarget, error) {
 		rootDir:   validator.Root(),
 		validator: validator,
 	}, nil
+}
+
+func resolveManifestOutputPath(target workflowTarget, outputPath string) (string, error) {
+	resolvedPath, err := target.validator.ResolveSafePath(target.rootDir, outputPath)
+	if err != nil {
+		return "", fmt.Errorf("manifest output path must stay within target directory: %w", err)
+	}
+
+	if err := target.validator.ValidatePathForWrite(resolvedPath); err != nil {
+		return "", fmt.Errorf("manifest output path must stay within target directory: %w", err)
+	}
+
+	return resolvedPath, nil
 }

@@ -140,6 +140,12 @@ func (v *Validator) ValidatePathForRead(path string) error {
 	return v.ValidateSymlink(path)
 }
 
+// ValidatePathForWrite checks if a path is safely contained within root and
+// verifies existing path components do not resolve through escaping symlinks.
+func (v *Validator) ValidatePathForWrite(path string) error {
+	return v.validatePathForMutation(path)
+}
+
 // SafeRename renames a file only if both source and destination are within root.
 func (v *Validator) SafeRename(oldPath, newPath string) error {
 	if err := v.validatePathForMutation(oldPath); err != nil {

@@ -50,6 +50,7 @@ Examples:
 
 Safety:
   The tool will NEVER modify files outside the specified directory.
+  The manifest output file must also resolve inside the target directory.
   All operations are contained within the target path.`,
 	}
 

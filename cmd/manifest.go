@@ -17,6 +17,11 @@ func buildManifestCommand() *cobra.Command {
 		Short: "Create a cryptographic inventory of all files",
 		Long: `Creates a manifest (JSON file) containing SHA256 hashes of all files.
 
+Safety:
+  - All manifest reads are contained within the target directory
+  - Output path must resolve within the target directory
+  - Relative -o paths are resolved from the target directory root
+
 The manifest can be used to:
   - Verify no data was lost after operations (compare manifests)
   - Track file inventory over time
@@ -38,7 +43,7 @@ Typical safe workflow:
 		},
 	}
 
-	cmd.Flags().StringVarP(&outputPath, "output", "o", "manifest.json", "Output path for manifest file")
+	cmd.Flags().StringVarP(&outputPath, "output", "o", "manifest.json", "Output path inside target directory")
 
 	return cmd
 }
@@ -65,7 +70,7 @@ func runManifest(args []string, outputPath string) error {
 	}
 
 	printCommandHeader("MANIFEST", execution.RootDir)
-	fmt.Printf("Output file: %s\n", outputPath)
+	fmt.Printf("Output file: %s\n", execution.OutputPath)
 	fmt.Printf("Workers: %d\n", workers)
 
 	fmt.Printf("\nCompleted in %v\n", execution.Duration.Round(time.Millisecond))
@@ -74,7 +79,7 @@ func runManifest(args []string, outputPath string) error {
 		fmt.Sprintf("Total files:    %d", execution.Manifest.FileCount()),
 		fmt.Sprintf("Unique files:   %d", execution.Manifest.UniqueFileCount()),
 		"Total size:     "+formatBytes(execution.Manifest.TotalSize()),
-		"Manifest saved: "+outputPath,
+		"Manifest saved: "+execution.OutputPath,
 	)
 
 	return nil

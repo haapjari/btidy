@@ -21,7 +21,8 @@ make build
 ./btidy duplicate /path/to/backup
 
 # Manifest
-./btidy manifest /path/to/backup -o manifest.json
+./btidy manifest /path/to/backup -o manifests/manifest.json
+# writes to /path/to/backup/manifests/manifest.json
 ```
 
 ## Typical Workflow
@@ -31,6 +32,13 @@ make build
 ./btidy flatten /path/to/backup/2018
 ./btidy duplicate /path/to/backup/2018
 ```
+
+## Safety
+
+- All file reads and mutations are contained within the target directory.
+- Symlink paths that resolve outside the target are rejected.
+- `manifest -o` output path must resolve inside the target directory.
+- Relative `manifest -o` paths are resolved from the target directory root.
 
 ## Tests
 
