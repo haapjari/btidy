@@ -13,7 +13,8 @@ import (
 
 const (
 	// PartialHashSize is the number of bytes to read from start and end for partial hash.
-	PartialHashSize = 4096 // TODO: Why 4096 (?)
+	// 4 KiB aligns with common filesystem block size and keeps partial-hash reads small.
+	PartialHashSize = 4096
 	// SmallFileThreshold - files smaller than this skip partial hash and go straight to full hash.
 	SmallFileThreshold = PartialHashSize * 2
 )
@@ -30,9 +31,6 @@ type HashResult struct {
 type Hasher struct {
 	workers int
 }
-
-// TODO: I don't understand this path. We have a type that returns a function.
-// we pass slice of types to a constructor. Explain this constructor process to me.
 
 // Option configures a Hasher.
 type Option func(*Hasher)
@@ -114,49 +112,27 @@ func (h *Hasher) ComputePartialHash(path string, size int64) (string, error) {
 // Returns a channel that will receive HashResult for each file.
 // The channel is closed when all files have been processed.
 func (h *Hasher) HashFiles(paths []string) <-chan HashResult {
-	results := make(chan HashResult, h.workers)
+	files := make([]FileToHash, len(paths))
+	for i, path := range paths {
+		files[i] = FileToHash{Path: path}
+	}
 
-	go func() {
-		defer close(results)
-
-		// Create work channel
-		work := make(chan string, h.workers)
-
-		// Start workers
-		var wg sync.WaitGroup
-		for range h.workers {
-			wg.Add(1)
-			go func() {
-				defer wg.Done()
-				for path := range work {
-					hash, err := h.ComputeHash(path)
-					var size int64
-					if err == nil {
-						if info, statErr := os.Stat(path); statErr == nil {
-							size = info.Size()
-						}
-					}
-					results <- HashResult{
-						Path:  path,
-						Hash:  hash,
-						Size:  size,
-						Error: err,
-					}
-				}
-			}()
+	return h.hashFilesConcurrently(files, func(file FileToHash) HashResult {
+		hash, err := h.ComputeHash(file.Path)
+		var size int64
+		if err == nil {
+			if info, statErr := os.Stat(file.Path); statErr == nil {
+				size = info.Size()
+			}
 		}
 
-		// Send work
-		for _, path := range paths {
-			work <- path
+		return HashResult{
+			Path:  file.Path,
+			Hash:  hash,
+			Size:  size,
+			Error: err,
 		}
-		close(work)
-
-		// Wait for all workers to finish
-		wg.Wait()
-	}()
-
-	return results
+	})
 }
 
 // HashFilesWithInfo computes hashes for files with known sizes concurrently.
@@ -169,44 +145,32 @@ type FileToHash struct {
 // HashFilesWithSizes computes hashes for files with known sizes.
 // This allows the hasher to use size information for optimizations.
 func (h *Hasher) HashFilesWithSizes(files []FileToHash) <-chan HashResult {
-	results := make(chan HashResult, h.workers)
-
-	go func() {
-		defer close(results)
-
-		work := make(chan FileToHash, h.workers)
-
-		var wg sync.WaitGroup
-		for range h.workers {
-			wg.Add(1)
-			go func() {
-				defer wg.Done()
-				for file := range work {
-					hash, err := h.ComputeHash(file.Path)
-					results <- HashResult{
-						Path:  file.Path,
-						Hash:  hash,
-						Size:  file.Size,
-						Error: err,
-					}
-				}
-			}()
+	return h.hashFilesConcurrently(files, func(file FileToHash) HashResult {
+		hash, err := h.ComputeHash(file.Path)
+		return HashResult{
+			Path:  file.Path,
+			Hash:  hash,
+			Size:  file.Size,
+			Error: err,
 		}
-
-		for _, file := range files {
-			work <- file
-		}
-		close(work)
-
-		wg.Wait()
-	}()
-
-	return results
+	})
 }
 
 // HashPartialFilesWithSizes computes partial hashes for files with known sizes.
 // This allows parallel pre-filtering for large file comparisons.
 func (h *Hasher) HashPartialFilesWithSizes(files []FileToHash) <-chan HashResult {
+	return h.hashFilesConcurrently(files, func(file FileToHash) HashResult {
+		hash, err := h.ComputePartialHash(file.Path, file.Size)
+		return HashResult{
+			Path:  file.Path,
+			Hash:  hash,
+			Size:  file.Size,
+			Error: err,
+		}
+	})
+}
+
+func (h *Hasher) hashFilesConcurrently(files []FileToHash, hashFn func(FileToHash) HashResult) <-chan HashResult {
 	results := make(chan HashResult, h.workers)
 
 	go func() {
@@ -220,13 +184,7 @@ func (h *Hasher) HashPartialFilesWithSizes(files []FileToHash) <-chan HashResult
 			go func() {
 				defer wg.Done()
 				for file := range work {
-					hash, err := h.ComputePartialHash(file.Path, file.Size)
-					results <- HashResult{
-						Path:  file.Path,
-						Hash:  hash,
-						Size:  file.Size,
-						Error: err,
-					}
+					results <- hashFn(file)
 				}
 			}()
 		}

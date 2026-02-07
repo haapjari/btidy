@@ -90,6 +90,16 @@ func TestHasher_ComputeHash_NonExistentFile(t *testing.T) {
 	assert.Error(t, err)
 }
 
+func TestHasher_ComputeHash_ReadError(t *testing.T) {
+	t.Parallel()
+
+	tmpDir := t.TempDir()
+	h := New()
+
+	_, err := h.ComputeHash(tmpDir)
+	assert.Error(t, err)
+}
+
 func TestHasher_ComputePartialHash(t *testing.T) {
 	t.Parallel()
 
@@ -166,6 +176,25 @@ func TestHasher_ComputePartialHash(t *testing.T) {
 
 		assert.NotEqual(t, hash1, hash2)
 	})
+}
+
+func TestHasher_ComputePartialHash_NonExistentFile(t *testing.T) {
+	t.Parallel()
+
+	h := New()
+	_, err := h.ComputePartialHash("/nonexistent/path/file.txt", 10)
+	assert.Error(t, err)
+}
+
+func TestHasher_ComputePartialHash_InvalidSizeTriggersSeekError(t *testing.T) {
+	t.Parallel()
+
+	tmpDir := t.TempDir()
+	path := createTestFile(t, tmpDir, "small.txt", "abc")
+
+	h := New()
+	_, err := h.ComputePartialHash(path, PartialHashSize+1)
+	assert.Error(t, err)
 }
 
 func TestHasher_HashFiles(t *testing.T) {
