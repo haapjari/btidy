@@ -34,26 +34,31 @@ Use --dry-run first to review what would be deleted!`,
 }
 
 func runDuplicate(_ *cobra.Command, args []string) error {
-	printDryRunBanner()
-	printCollectingFiles()
-
-	progress := startProgress("Working")
-	execution, err := newUseCaseService().RunDuplicate(usecase.DuplicateRequest{
-		TargetDir: args[0],
-		DryRun:    dryRun,
-		Workers:   workers,
-	})
-	progress.Stop()
+	execution, empty, err := runFileCommand(
+		"DUPLICATE",
+		false,
+		func() (usecase.DuplicateExecution, error) {
+			return newUseCaseService().RunDuplicate(usecase.DuplicateRequest{
+				TargetDir: args[0],
+				DryRun:    dryRun,
+				Workers:   workers,
+			})
+		},
+		func(execution usecase.DuplicateExecution) fileCommandExecutionInfo {
+			return fileCommandExecutionInfo{
+				rootDir:         execution.RootDir,
+				fileCount:       execution.FileCount,
+				collectDuration: execution.CollectDuration,
+			}
+		},
+		func() {
+			fmt.Printf("Workers: %d\n", workers)
+		},
+	)
 	if err != nil {
 		return err
 	}
-
-	printCommandHeader("DUPLICATE", execution.RootDir)
-	fmt.Printf("Workers: %d\n", workers)
-	printFoundFiles(execution.FileCount, execution.CollectDuration, false)
-
-	if execution.FileCount == 0 {
-		fmt.Println("No files to process.")
+	if empty {
 		return nil
 	}
 

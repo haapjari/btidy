@@ -31,24 +31,28 @@ After:  "2018-06-15_my_document.pdf"`,
 }
 
 func runRename(_ *cobra.Command, args []string) error {
-	printDryRunBanner()
-	printCollectingFiles()
-
-	progress := startProgress("Working")
-	execution, err := newUseCaseService().RunRename(usecase.RenameRequest{
-		TargetDir: args[0],
-		DryRun:    dryRun,
-	})
-	progress.Stop()
+	execution, empty, err := runFileCommand(
+		"RENAME",
+		true,
+		func() (usecase.RenameExecution, error) {
+			return newUseCaseService().RunRename(usecase.RenameRequest{
+				TargetDir: args[0],
+				DryRun:    dryRun,
+			})
+		},
+		func(execution usecase.RenameExecution) fileCommandExecutionInfo {
+			return fileCommandExecutionInfo{
+				rootDir:         execution.RootDir,
+				fileCount:       execution.FileCount,
+				collectDuration: execution.CollectDuration,
+			}
+		},
+		nil,
+	)
 	if err != nil {
 		return err
 	}
-
-	printCommandHeader("RENAME", execution.RootDir)
-	printFoundFiles(execution.FileCount, execution.CollectDuration, true)
-
-	if execution.FileCount == 0 {
-		fmt.Println("No files to process.")
+	if empty {
 		return nil
 	}
 

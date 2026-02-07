@@ -46,6 +46,44 @@ func printFoundFiles(fileCount int, elapsed time.Duration, trailingBlankLine boo
 	}
 }
 
+type fileCommandExecutionInfo struct {
+	rootDir         string
+	fileCount       int
+	collectDuration time.Duration
+}
+
+func runFileCommand[T any](
+	command string,
+	trailingBlankLine bool,
+	execute func() (T, error),
+	executionInfo func(T) fileCommandExecutionInfo,
+	printExtraHeader func(),
+) (execution T, empty bool, err error) {
+	printDryRunBanner()
+	printCollectingFiles()
+
+	progress := startProgress("Working")
+	execution, err = execute()
+	progress.Stop()
+	if err != nil {
+		return execution, false, err
+	}
+
+	info := executionInfo(execution)
+	printCommandHeader(command, info.rootDir)
+	if printExtraHeader != nil {
+		printExtraHeader()
+	}
+	printFoundFiles(info.fileCount, info.collectDuration, trailingBlankLine)
+
+	if info.fileCount == 0 {
+		fmt.Println("No files to process.")
+		return execution, true, nil
+	}
+
+	return execution, false, nil
+}
+
 func printSummary(lines ...string) {
 	fmt.Println("=== Summary ===")
 	for _, line := range lines {
