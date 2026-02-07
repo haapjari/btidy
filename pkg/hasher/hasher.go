@@ -31,7 +31,7 @@ type Hasher struct {
 	workers int
 }
 
-// TODO: I don't understand this path. We have a type that returns a function. 
+// TODO: I don't understand this path. We have a type that returns a function.
 // we pass slice of types to a constructor. Explain this constructor process to me.
 
 // Option configures a Hasher.

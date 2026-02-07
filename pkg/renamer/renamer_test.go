@@ -218,6 +218,45 @@ func TestRenamer_RenameFiles_HandleConflicts(t *testing.T) {
 	assert.True(t, names["2018-06-15_document_1.pdf"], "should have suffixed name")
 }
 
+func TestRenamer_RenameFiles_SameMetadataDifferentContent_BatchKeepsBoth(t *testing.T) {
+	tmpDir := setupTestDir(t)
+	defer os.RemoveAll(tmpDir)
+
+	modTime := time.Date(2018, 6, 15, 12, 0, 0, 0, time.UTC)
+	createTestFileWithContent(t, tmpDir, "Photo.jpg", "alpha-123", modTime)
+	createTestFileWithContent(t, tmpDir, "photo.jpg", "omega-123", modTime)
+
+	c := collector.New(collector.Options{})
+	files, err := c.Collect(tmpDir)
+	require.NoError(t, err)
+	require.Len(t, files, 2)
+
+	r, err := New(tmpDir, false)
+	require.NoError(t, err)
+	result := r.RenameFiles(files)
+
+	assert.Equal(t, 2, result.TotalFiles)
+	assert.Equal(t, 2, result.RenamedCount)
+	assert.Equal(t, 0, result.SkippedCount)
+	assert.Equal(t, 0, result.DeletedCount)
+	assert.Equal(t, 0, result.ErrorCount)
+
+	basePath := filepath.Join(tmpDir, "2018-06-15_photo.jpg")
+	suffixPath := filepath.Join(tmpDir, "2018-06-15_photo_1.jpg")
+
+	_, err = os.Stat(basePath)
+	require.NoError(t, err)
+	_, err = os.Stat(suffixPath)
+	require.NoError(t, err)
+
+	baseContent, err := os.ReadFile(basePath)
+	require.NoError(t, err)
+	suffixContent, err := os.ReadFile(suffixPath)
+	require.NoError(t, err)
+
+	assert.NotEqual(t, string(baseContent), string(suffixContent))
+}
+
 func TestRenamer_RenameFiles_RemovesDuplicateInBatch(t *testing.T) {
 	tmpDir := setupTestDir(t)
 	defer os.RemoveAll(tmpDir)
@@ -290,6 +329,83 @@ func TestRenamer_RenameFiles_RemovesDuplicateTarget(t *testing.T) {
 
 	_, err = os.Stat(filepath.Join(tmpDir, "2018-06-15_my_doc.pdf"))
 	require.NoError(t, err, "existing target should remain")
+}
+
+func TestRenamer_RenameFiles_SameMetadataDifferentContent_TargetCollisionKeepsSource(t *testing.T) {
+	tmpDir := setupTestDir(t)
+	defer os.RemoveAll(tmpDir)
+
+	modTime := time.Date(2018, 6, 15, 12, 0, 0, 0, time.UTC)
+	createTestFileWithContent(t, tmpDir, "My Doc.pdf", "ABCD", modTime)
+	createTestFileWithContent(t, tmpDir, "2018-06-15_my_doc.pdf", "WXYZ", modTime)
+
+	originalPath := filepath.Join(tmpDir, "My Doc.pdf")
+	info, err := os.Stat(originalPath)
+	require.NoError(t, err)
+
+	files := []collector.FileInfo{
+		{
+			Path:    originalPath,
+			Dir:     tmpDir,
+			Name:    "My Doc.pdf",
+			Size:    info.Size(),
+			ModTime: info.ModTime(),
+		},
+	}
+
+	r, err := New(tmpDir, false)
+	require.NoError(t, err)
+	result := r.RenameFiles(files)
+
+	assert.Equal(t, 1, result.TotalFiles)
+	assert.Equal(t, 0, result.RenamedCount)
+	assert.Equal(t, 1, result.SkippedCount)
+	assert.Equal(t, 0, result.DeletedCount)
+	assert.Equal(t, 0, result.ErrorCount)
+
+	require.Len(t, result.Operations, 1)
+	op := result.Operations[0]
+	assert.True(t, op.Skipped)
+	assert.Equal(t, "target file already exists", op.SkipReason)
+	assert.False(t, op.Deleted)
+
+	_, err = os.Stat(originalPath)
+	require.NoError(t, err, "source should remain when target has different bytes")
+
+	_, err = os.Stat(filepath.Join(tmpDir, "2018-06-15_my_doc.pdf"))
+	require.NoError(t, err, "existing target should remain")
+}
+
+func TestRenamer_RenameFiles_DryRun_NoFilesystemMutations(t *testing.T) {
+	tmpDir := setupTestDir(t)
+	defer os.RemoveAll(tmpDir)
+
+	modTime := time.Date(2018, 6, 15, 12, 0, 0, 0, time.UTC)
+	createTestFileWithContent(t, tmpDir, "Report.pdf", "same-content", modTime)
+	createTestFileWithContent(t, tmpDir, "report.pdf", "same-content", modTime)
+
+	c := collector.New(collector.Options{})
+	files, err := c.Collect(tmpDir)
+	require.NoError(t, err)
+	require.Len(t, files, 2)
+
+	r, err := New(tmpDir, true)
+	require.NoError(t, err)
+	result := r.RenameFiles(files)
+
+	assert.Equal(t, 2, result.TotalFiles)
+	assert.Equal(t, 1, result.RenamedCount)
+	assert.Equal(t, 1, result.SkippedCount)
+	assert.Equal(t, 0, result.DeletedCount)
+	assert.Equal(t, 0, result.ErrorCount)
+
+	_, err = os.Stat(filepath.Join(tmpDir, "Report.pdf"))
+	require.NoError(t, err)
+	_, err = os.Stat(filepath.Join(tmpDir, "report.pdf"))
+	require.NoError(t, err)
+
+	_, err = os.Stat(filepath.Join(tmpDir, "2018-06-15_report.pdf"))
+	assert.True(t, os.IsNotExist(err), "dry-run must not create renamed files")
 }
 
 func TestRenamer_RenameFiles_MultipleFiles(t *testing.T) {

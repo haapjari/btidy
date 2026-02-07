@@ -86,6 +86,43 @@ func TestFlattener_FlattenFiles_DryRun(t *testing.T) {
 	assert.True(t, os.IsNotExist(err), "file should not be in root")
 }
 
+func TestFlattener_FlattenFiles_DryRun_NoFilesystemMutations(t *testing.T) {
+	tmpDir := setupTestDir(t)
+	defer os.RemoveAll(tmpDir)
+
+	modTime := time.Date(2018, 6, 15, 12, 0, 0, 0, time.UTC)
+	createTestFile(t, filepath.Join(tmpDir, "dir1", "file.txt"), "content", modTime)
+	createTestFile(t, filepath.Join(tmpDir, "dir2", "file.txt"), "content", modTime)
+
+	c := collector.New(collector.Options{})
+	files, err := c.Collect(tmpDir)
+	require.NoError(t, err)
+	require.Len(t, files, 2)
+
+	f, err := New(tmpDir, true)
+	require.NoError(t, err)
+	result := f.FlattenFiles(files)
+
+	assert.Equal(t, 2, result.TotalFiles)
+	assert.Equal(t, 1, result.MovedCount)
+	assert.Equal(t, 1, result.DuplicatesCount)
+	assert.Equal(t, 0, result.DeletedDirsCount)
+	assert.Equal(t, 0, result.ErrorCount)
+
+	_, err = os.Stat(filepath.Join(tmpDir, "dir1", "file.txt"))
+	require.NoError(t, err)
+	_, err = os.Stat(filepath.Join(tmpDir, "dir2", "file.txt"))
+	require.NoError(t, err)
+
+	_, err = os.Stat(filepath.Join(tmpDir, "file.txt"))
+	assert.True(t, os.IsNotExist(err), "dry-run must not move files to root")
+
+	_, err = os.Stat(filepath.Join(tmpDir, "dir1"))
+	require.NoError(t, err, "dry-run must not remove directories")
+	_, err = os.Stat(filepath.Join(tmpDir, "dir2"))
+	require.NoError(t, err, "dry-run must not remove directories")
+}
+
 func TestFlattener_FlattenFiles_Duplicates(t *testing.T) {
 	tmpDir := setupTestDir(t)
 	defer os.RemoveAll(tmpDir)
@@ -111,6 +148,44 @@ func TestFlattener_FlattenFiles_Duplicates(t *testing.T) {
 	// Only one file should exist in root.
 	_, err = os.Stat(filepath.Join(tmpDir, "file.txt"))
 	require.NoError(t, err)
+}
+
+func TestFlattener_FlattenFiles_SameMetadataDifferentContent_NotDuplicate(t *testing.T) {
+	tmpDir := setupTestDir(t)
+	defer os.RemoveAll(tmpDir)
+
+	modTime := time.Date(2018, 6, 15, 12, 0, 0, 0, time.UTC)
+	createTestFile(t, filepath.Join(tmpDir, "dir1", "file.txt"), "alpha-1", modTime)
+	createTestFile(t, filepath.Join(tmpDir, "dir2", "file.txt"), "omega-2", modTime)
+
+	c := collector.New(collector.Options{})
+	files, err := c.Collect(tmpDir)
+	require.NoError(t, err)
+	require.Len(t, files, 2)
+
+	f, err := New(tmpDir, false)
+	require.NoError(t, err)
+	result := f.FlattenFiles(files)
+
+	assert.Equal(t, 2, result.TotalFiles)
+	assert.Equal(t, 2, result.MovedCount)
+	assert.Equal(t, 0, result.DuplicatesCount)
+	assert.Equal(t, 0, result.ErrorCount)
+
+	basePath := filepath.Join(tmpDir, "file.txt")
+	suffixPath := filepath.Join(tmpDir, "file_1.txt")
+
+	_, err = os.Stat(basePath)
+	require.NoError(t, err)
+	_, err = os.Stat(suffixPath)
+	require.NoError(t, err)
+
+	baseContent, err := os.ReadFile(basePath)
+	require.NoError(t, err)
+	suffixContent, err := os.ReadFile(suffixPath)
+	require.NoError(t, err)
+
+	assert.NotEqual(t, string(baseContent), string(suffixContent))
 }
 
 func TestFlattener_FlattenFiles_NameConflict(t *testing.T) {

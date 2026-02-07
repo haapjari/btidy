@@ -9,6 +9,7 @@ import (
 	"regexp"
 
 	"file-organizer/pkg/collector"
+	"file-organizer/pkg/hasher"
 	"file-organizer/pkg/safepath"
 	"file-organizer/pkg/sanitizer"
 )
@@ -39,6 +40,7 @@ type Result struct {
 type Renamer struct {
 	dryRun    bool
 	validator *safepath.Validator
+	hasher    *hasher.Hasher
 }
 
 var tbdPrefixPattern = regexp.MustCompile(`^\d{4}-TBD-TBD_`)
@@ -46,6 +48,7 @@ var tbdPrefixPattern = regexp.MustCompile(`^\d{4}-TBD-TBD_`)
 type nameUsage struct {
 	count int
 	file  collector.FileInfo
+	hash  string
 }
 
 // New creates a new Renamer with path containment validation.
@@ -58,6 +61,7 @@ func New(rootDir string, dryRun bool) (*Renamer, error) {
 	return &Renamer{
 		dryRun:    dryRun,
 		validator: v,
+		hasher:    hasher.New(),
 	}, nil
 }
 
@@ -174,19 +178,42 @@ func sameFileInfo(a, b collector.FileInfo) bool {
 	return a.Size == b.Size && a.ModTime.Equal(b.ModTime)
 }
 
+func (r *Renamer) sameContent(pathA, pathB string) (bool, error) {
+	hashA, err := r.hasher.ComputeHash(pathA)
+	if err != nil {
+		return false, fmt.Errorf("failed to hash %s: %w", pathA, err)
+	}
+
+	hashB, err := r.hasher.ComputeHash(pathB)
+	if err != nil {
+		return false, fmt.Errorf("failed to hash %s: %w", pathB, err)
+	}
+
+	return hashA == hashB, nil
+}
+
 func (r *Renamer) resolveNameConflict(op *RenameOperation, f collector.FileInfo, baseName, nameWithoutExt, ext string, usageMap map[string]nameUsage) (string, bool) {
 	usage, ok := usageMap[baseName]
 	if !ok {
+		hash, err := r.hasher.ComputeHash(f.Path)
+		if err != nil {
+			hash = ""
+		}
+
 		usageMap[baseName] = nameUsage{
 			count: 1,
 			file:  f,
+			hash:  hash,
 		}
 		return baseName, false
 	}
 
 	if sameFileInfo(usage.file, f) {
-		r.markAsDuplicate(op, f)
-		return "", true
+		currentHash, err := r.hasher.ComputeHash(f.Path)
+		if err == nil && usage.hash != "" && currentHash == usage.hash {
+			r.markAsDuplicate(op, f)
+			return "", true
+		}
 	}
 
 	newName := fmt.Sprintf("%s_%d%s", nameWithoutExt, usage.count, ext)
@@ -204,26 +231,39 @@ func (r *Renamer) markAsDuplicate(op *RenameOperation, f collector.FileInfo) {
 		return
 	}
 
-	if err := os.Remove(f.Path); err != nil {
+	if err := r.validator.SafeRemove(f.Path); err != nil {
 		op.Error = err
 	}
 }
 
 func (r *Renamer) handleExistingTarget(op *RenameOperation, f collector.FileInfo, info os.FileInfo) {
-	if info.Size() == f.Size && info.ModTime().Equal(f.ModTime) {
+	if info.Size() != f.Size || !info.ModTime().Equal(f.ModTime) {
 		op.Skipped = true
-		op.SkipReason = "duplicate file already exists"
-		op.Deleted = true
-		if r.dryRun {
-			op.Deleted = false
-			return
-		}
-		if err := os.Remove(f.Path); err != nil {
-			op.Error = err
-		}
+		op.SkipReason = "target file already exists"
+		return
+	}
+
+	isDuplicate, err := r.sameContent(op.NewPath, f.Path)
+	if err != nil {
+		op.Error = err
+		return
+	}
+
+	if !isDuplicate {
+		op.Skipped = true
+		op.SkipReason = "target file already exists"
 		return
 	}
 
 	op.Skipped = true
-	op.SkipReason = "target file already exists"
+	op.SkipReason = "duplicate file already exists"
+
+	if r.dryRun {
+		return
+	}
+
+	op.Deleted = true
+	if removeErr := r.validator.SafeRemove(f.Path); removeErr != nil {
+		op.Error = removeErr
+	}
 }
