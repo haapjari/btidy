@@ -10,25 +10,18 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"btidy/internal/testutil"
 	"btidy/pkg/collector"
 )
 
 func setupTestDir(t *testing.T) string {
 	t.Helper()
-	tmpDir, err := os.MkdirTemp("", "flattener-test-*")
-	require.NoError(t, err)
-	return tmpDir
+	return testutil.TempDir(t)
 }
 
 func createTestFile(t *testing.T, path, content string, modTime time.Time) {
 	t.Helper()
-	dir := filepath.Dir(path)
-	err := os.MkdirAll(dir, 0o755)
-	require.NoError(t, err)
-	err = os.WriteFile(path, []byte(content), 0o600)
-	require.NoError(t, err)
-	err = os.Chtimes(path, modTime, modTime)
-	require.NoError(t, err)
+	testutil.CreateFileWithModTime(t, path, content, modTime)
 }
 
 func TestFlattener_FlattenFiles_Basic(t *testing.T) {

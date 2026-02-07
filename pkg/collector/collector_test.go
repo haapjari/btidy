@@ -8,14 +8,15 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"btidy/internal/testutil"
 )
 
 // setupTestDir creates a temporary directory structure for testing.
 func setupTestDir(t *testing.T) string {
 	t.Helper()
 
-	tmpDir, err := os.MkdirTemp("", "collector-test-*")
-	require.NoError(t, err, "failed to create temp dir")
+	tmpDir := testutil.TempDir(t)
 
 	// Create test structure:
 	// tmpDir/
@@ -38,13 +39,7 @@ func setupTestDir(t *testing.T) string {
 
 	for _, f := range files {
 		fullPath := filepath.Join(tmpDir, f)
-		dir := filepath.Dir(fullPath)
-
-		err := os.MkdirAll(dir, 0755)
-		require.NoError(t, err, "failed to create dir %s", dir)
-
-		err = os.WriteFile(fullPath, []byte("test content for "+f), 0644)
-		require.NoError(t, err, "failed to create file %s", fullPath)
+		testutil.CreateFile(t, fullPath, "test content for "+f)
 	}
 
 	return tmpDir

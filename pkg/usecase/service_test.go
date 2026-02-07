@@ -8,27 +8,16 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"btidy/internal/testutil"
 )
-
-func createTestFile(t *testing.T, path, content string, modTime time.Time) {
-	t.Helper()
-
-	err := os.MkdirAll(filepath.Dir(path), 0o755)
-	require.NoError(t, err)
-
-	err = os.WriteFile(path, []byte(content), 0o600)
-	require.NoError(t, err)
-
-	err = os.Chtimes(path, modTime, modTime)
-	require.NoError(t, err)
-}
 
 func TestService_RunRename_DryRun(t *testing.T) {
 	t.Parallel()
 
 	tmpDir := t.TempDir()
 	modTime := time.Date(2018, 6, 15, 12, 0, 0, 0, time.UTC)
-	createTestFile(t, filepath.Join(tmpDir, "My Document.pdf"), "content", modTime)
+	testutil.CreateFileWithModTime(t, filepath.Join(tmpDir, "My Document.pdf"), "content", modTime)
 
 	s := New(Options{})
 	execution, err := s.RunRename(RenameRequest{
@@ -55,7 +44,7 @@ func TestService_RunFlatten_DryRun(t *testing.T) {
 
 	tmpDir := t.TempDir()
 	modTime := time.Date(2018, 6, 15, 12, 0, 0, 0, time.UTC)
-	createTestFile(t, filepath.Join(tmpDir, "nested", "file.txt"), "content", modTime)
+	testutil.CreateFileWithModTime(t, filepath.Join(tmpDir, "nested", "file.txt"), "content", modTime)
 
 	s := New(Options{})
 	execution, err := s.RunFlatten(FlattenRequest{
@@ -83,8 +72,8 @@ func TestService_RunDuplicate_DryRun(t *testing.T) {
 
 	tmpDir := t.TempDir()
 	modTime := time.Date(2018, 6, 15, 12, 0, 0, 0, time.UTC)
-	createTestFile(t, filepath.Join(tmpDir, "a.txt"), "same-content", modTime)
-	createTestFile(t, filepath.Join(tmpDir, "b.txt"), "same-content", modTime)
+	testutil.CreateFileWithModTime(t, filepath.Join(tmpDir, "a.txt"), "same-content", modTime)
+	testutil.CreateFileWithModTime(t, filepath.Join(tmpDir, "b.txt"), "same-content", modTime)
 
 	s := New(Options{})
 	execution, err := s.RunDuplicate(DuplicateRequest{
@@ -112,8 +101,8 @@ func TestService_RunManifest_WithSkipFiles(t *testing.T) {
 
 	tmpDir := t.TempDir()
 	modTime := time.Date(2018, 6, 15, 12, 0, 0, 0, time.UTC)
-	createTestFile(t, filepath.Join(tmpDir, "keep.txt"), "keep", modTime)
-	createTestFile(t, filepath.Join(tmpDir, ".DS_Store"), "skip", modTime)
+	testutil.CreateFileWithModTime(t, filepath.Join(tmpDir, "keep.txt"), "keep", modTime)
+	testutil.CreateFileWithModTime(t, filepath.Join(tmpDir, ".DS_Store"), "skip", modTime)
 
 	outputPath := filepath.Join(tmpDir, "manifest.json")
 

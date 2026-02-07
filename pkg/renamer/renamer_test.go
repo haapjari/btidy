@@ -9,17 +9,14 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"btidy/internal/testutil"
 	"btidy/pkg/collector"
 )
 
 // setupTestDir creates a temporary directory with test files.
 func setupTestDir(t *testing.T) string {
 	t.Helper()
-
-	tmpDir, err := os.MkdirTemp("", "renamer-test-*")
-	require.NoError(t, err)
-
-	return tmpDir
+	return testutil.TempDir(t)
 }
 
 // createTestFile creates a file with specific modification time.
@@ -31,13 +28,7 @@ func createTestFile(t *testing.T, dir, name string, modTime time.Time) {
 
 func createTestFileWithContent(t *testing.T, dir, name, content string, modTime time.Time) {
 	t.Helper()
-
-	path := filepath.Join(dir, name)
-	err := os.WriteFile(path, []byte(content), 0o600)
-	require.NoError(t, err)
-
-	err = os.Chtimes(path, modTime, modTime)
-	require.NoError(t, err)
+	testutil.CreateFileWithModTime(t, filepath.Join(dir, name), content, modTime)
 }
 
 func TestRenamer_RenameFiles_DryRun(t *testing.T) {

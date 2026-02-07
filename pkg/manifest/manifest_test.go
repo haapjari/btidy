@@ -10,16 +10,9 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-)
 
-func createTestFile(t *testing.T, path, content string) {
-	t.Helper()
-	dir := filepath.Dir(path)
-	err := os.MkdirAll(dir, 0755)
-	require.NoError(t, err)
-	err = os.WriteFile(path, []byte(content), 0644)
-	require.NoError(t, err)
-}
+	"btidy/internal/testutil"
+)
 
 func expectedHash(content string) string {
 	h := sha256.Sum256([]byte(content))
@@ -48,7 +41,7 @@ func TestNewGenerator(t *testing.T) {
 		t.Parallel()
 		tmpDir := t.TempDir()
 		filePath := filepath.Join(tmpDir, "file.txt")
-		createTestFile(t, filePath, "content")
+		testutil.CreateFile(t, filePath, "content")
 
 		_, err := NewGenerator(filePath, 0)
 		require.Error(t, err)
@@ -85,7 +78,7 @@ func TestGenerator_Generate_SingleFile(t *testing.T) {
 	tmpDir := t.TempDir()
 
 	content := "hello world"
-	createTestFile(t, filepath.Join(tmpDir, "test.txt"), content)
+	testutil.CreateFile(t, filepath.Join(tmpDir, "test.txt"), content)
 
 	g, err := NewGenerator(tmpDir, 0)
 	require.NoError(t, err)
@@ -112,7 +105,7 @@ func TestGenerator_Generate_MultipleFiles(t *testing.T) {
 	}
 
 	for name, content := range files {
-		createTestFile(t, filepath.Join(tmpDir, name), content)
+		testutil.CreateFile(t, filepath.Join(tmpDir, name), content)
 	}
 
 	g, err := NewGenerator(tmpDir, 0)
@@ -141,9 +134,9 @@ func TestGenerator_Generate_WithSkipFiles(t *testing.T) {
 	t.Parallel()
 	tmpDir := t.TempDir()
 
-	createTestFile(t, filepath.Join(tmpDir, "keep.txt"), "keep")
-	createTestFile(t, filepath.Join(tmpDir, ".DS_Store"), "skip")
-	createTestFile(t, filepath.Join(tmpDir, "Thumbs.db"), "skip")
+	testutil.CreateFile(t, filepath.Join(tmpDir, "keep.txt"), "keep")
+	testutil.CreateFile(t, filepath.Join(tmpDir, ".DS_Store"), "skip")
+	testutil.CreateFile(t, filepath.Join(tmpDir, "Thumbs.db"), "skip")
 
 	g, err := NewGenerator(tmpDir, 0)
 	require.NoError(t, err)
@@ -164,7 +157,7 @@ func TestGenerator_Generate_WithProgress(t *testing.T) {
 	numFiles := 5
 	for i := range numFiles {
 		name := string(rune('a'+i)) + ".txt"
-		createTestFile(t, filepath.Join(tmpDir, name), "content")
+		testutil.CreateFile(t, filepath.Join(tmpDir, name), "content")
 	}
 
 	g, err := NewGenerator(tmpDir, 0)
@@ -330,9 +323,9 @@ func TestManifest_RelativePaths(t *testing.T) {
 	tmpDir := t.TempDir()
 
 	// Create nested structure
-	createTestFile(t, filepath.Join(tmpDir, "root.txt"), "root")
-	createTestFile(t, filepath.Join(tmpDir, "dir1", "file1.txt"), "file1")
-	createTestFile(t, filepath.Join(tmpDir, "dir1", "dir2", "file2.txt"), "file2")
+	testutil.CreateFile(t, filepath.Join(tmpDir, "root.txt"), "root")
+	testutil.CreateFile(t, filepath.Join(tmpDir, "dir1", "file1.txt"), "file1")
+	testutil.CreateFile(t, filepath.Join(tmpDir, "dir1", "dir2", "file2.txt"), "file2")
 
 	g, err := NewGenerator(tmpDir, 0)
 	require.NoError(t, err)
@@ -352,9 +345,9 @@ func TestGenerator_Generate_DuplicateContent(t *testing.T) {
 
 	// Create files with same content
 	sameContent := "duplicate content"
-	createTestFile(t, filepath.Join(tmpDir, "file1.txt"), sameContent)
-	createTestFile(t, filepath.Join(tmpDir, "file2.txt"), sameContent)
-	createTestFile(t, filepath.Join(tmpDir, "file3.txt"), "unique content")
+	testutil.CreateFile(t, filepath.Join(tmpDir, "file1.txt"), sameContent)
+	testutil.CreateFile(t, filepath.Join(tmpDir, "file2.txt"), sameContent)
+	testutil.CreateFile(t, filepath.Join(tmpDir, "file3.txt"), "unique content")
 
 	g, err := NewGenerator(tmpDir, 0)
 	require.NoError(t, err)
