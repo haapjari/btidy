@@ -137,11 +137,7 @@ func (f *Flattener) processFile(file *collector.FileInfo, hash string, seenHash 
 	}
 
 	// Validate source path is within root.
-	if err := f.validator.ValidatePath(file.Path); err != nil {
-		op.Error = fmt.Errorf("source path escapes root: %w", err)
-		return op
-	}
-	if err := f.validator.ValidateSymlink(file.Path); err != nil {
+	if err := f.validator.ValidatePathForRead(file.Path); err != nil {
 		op.Error = fmt.Errorf("source path escapes root: %w", err)
 		return op
 	}

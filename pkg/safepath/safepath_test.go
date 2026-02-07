@@ -216,6 +216,58 @@ func TestValidateSymlink(t *testing.T) {
 	})
 }
 
+func TestValidatePathForRead(t *testing.T) {
+	t.Parallel()
+
+	t.Run("regular file within root", func(t *testing.T) {
+		t.Parallel()
+
+		tmpDir := t.TempDir()
+		filePath := filepath.Join(tmpDir, "file.txt")
+		require.NoError(t, os.WriteFile(filePath, []byte("content"), 0o644))
+
+		v, err := safepath.New(tmpDir)
+		require.NoError(t, err)
+
+		assert.NoError(t, v.ValidatePathForRead(filePath))
+	})
+
+	t.Run("path escape", func(t *testing.T) {
+		t.Parallel()
+
+		tmpDir := t.TempDir()
+		v, err := safepath.New(tmpDir)
+		require.NoError(t, err)
+
+		err = v.ValidatePathForRead(filepath.Join(tmpDir, "..", "outside.txt"))
+		assert.Error(t, err)
+	})
+
+	t.Run("symlink escape", func(t *testing.T) {
+		t.Parallel()
+
+		baseDir := t.TempDir()
+		rootDir := filepath.Join(baseDir, "root")
+		outsideDir := filepath.Join(baseDir, "outside")
+		require.NoError(t, os.MkdirAll(rootDir, 0o755))
+		require.NoError(t, os.MkdirAll(outsideDir, 0o755))
+
+		outsideFile := filepath.Join(outsideDir, "secret.txt")
+		require.NoError(t, os.WriteFile(outsideFile, []byte("secret"), 0o644))
+
+		linkPath := filepath.Join(rootDir, "escape_link")
+		if err := os.Symlink(outsideFile, linkPath); err != nil {
+			t.Skip("symlinks not supported")
+		}
+
+		v, err := safepath.New(rootDir)
+		require.NoError(t, err)
+
+		err = v.ValidatePathForRead(linkPath)
+		assert.Error(t, err)
+	})
+}
+
 func TestSafeRename(t *testing.T) {
 	t.Parallel()
 

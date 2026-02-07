@@ -108,11 +108,7 @@ func (r *Renamer) processFile(f collector.FileInfo, dirNames map[string]map[stri
 	}
 
 	// Validate source path is within root.
-	if err := r.validator.ValidatePath(f.Path); err != nil {
-		op.Error = fmt.Errorf("source path escapes root: %w", err)
-		return op
-	}
-	if err := r.validator.ValidateSymlink(f.Path); err != nil {
+	if err := r.validator.ValidatePathForRead(f.Path); err != nil {
 		op.Error = fmt.Errorf("source path escapes root: %w", err)
 		return op
 	}

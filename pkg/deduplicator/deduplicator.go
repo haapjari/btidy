@@ -255,11 +255,7 @@ func (d *Deduplicator) deleteFile(file collector.FileInfo, originalPath, hash st
 	}
 
 	// Validate path is within root.
-	if err := d.validator.ValidatePath(file.Path); err != nil {
-		op.Error = fmt.Errorf("path escapes root: %w", err)
-		return op
-	}
-	if err := d.validator.ValidateSymlink(file.Path); err != nil {
+	if err := d.validator.ValidatePathForRead(file.Path); err != nil {
 		op.Error = fmt.Errorf("path escapes root: %w", err)
 		return op
 	}
