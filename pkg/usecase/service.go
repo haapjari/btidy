@@ -2,6 +2,7 @@
 package usecase
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"time"
@@ -99,7 +100,12 @@ func (s *Service) RunRename(req RenameRequest) (RenameExecution, error) {
 		return RenameExecution{}, err
 	}
 
-	return renameExecutionFromWorkflow(workflowResult), nil
+	execution := renameExecutionFromWorkflow(workflowResult)
+	if err := failOnUnsafeRenameResult(execution.Result); err != nil {
+		return execution, err
+	}
+
+	return execution, nil
 }
 
 // RunFlatten executes the flatten workflow.
@@ -109,7 +115,12 @@ func (s *Service) RunFlatten(req FlattenRequest) (FlattenExecution, error) {
 		return FlattenExecution{}, err
 	}
 
-	return flattenExecutionFromWorkflow(workflowResult), nil
+	execution := flattenExecutionFromWorkflow(workflowResult)
+	if err := failOnUnsafeFlattenResult(execution.Result); err != nil {
+		return execution, err
+	}
+
+	return execution, nil
 }
 
 // RunDuplicate executes the duplicate workflow.
@@ -119,7 +130,12 @@ func (s *Service) RunDuplicate(req DuplicateRequest) (DuplicateExecution, error)
 		return DuplicateExecution{}, err
 	}
 
-	return duplicateExecutionFromWorkflow(workflowResult), nil
+	execution := duplicateExecutionFromWorkflow(workflowResult)
+	if err := failOnUnsafeDuplicateResult(execution.Result); err != nil {
+		return execution, err
+	}
+
+	return execution, nil
 }
 
 // RunManifest executes the manifest workflow.
@@ -315,4 +331,42 @@ func resolveManifestOutputPath(target workflowTarget, outputPath string) (string
 	}
 
 	return resolvedPath, nil
+}
+
+func failOnUnsafeRenameResult(result renamer.Result) error {
+	for _, op := range result.Operations {
+		if isUnsafePathError(op.Error) {
+			return fmt.Errorf("unsafe path detected in rename command for %q: %w", op.OriginalPath, op.Error)
+		}
+	}
+
+	return nil
+}
+
+func failOnUnsafeFlattenResult(result flattener.Result) error {
+	for _, op := range result.Operations {
+		if isUnsafePathError(op.Error) {
+			return fmt.Errorf("unsafe path detected in flatten command for %q: %w", op.OriginalPath, op.Error)
+		}
+	}
+
+	return nil
+}
+
+func failOnUnsafeDuplicateResult(result deduplicator.Result) error {
+	for _, op := range result.Operations {
+		if isUnsafePathError(op.Error) {
+			return fmt.Errorf("unsafe path detected in duplicate command for %q: %w", op.Path, op.Error)
+		}
+	}
+
+	return nil
+}
+
+func isUnsafePathError(err error) bool {
+	if err == nil {
+		return false
+	}
+
+	return errors.Is(err, safepath.ErrPathEscape) || errors.Is(err, safepath.ErrSymlinkEscape)
 }

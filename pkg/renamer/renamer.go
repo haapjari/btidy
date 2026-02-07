@@ -82,6 +82,13 @@ func (r *Renamer) RenameFiles(files []collector.FileInfo) Result {
 		Operations: make([]RenameOperation, 0, len(files)),
 	}
 
+	invalidReadOps := r.collectInvalidSourceReadOps(files)
+	if len(invalidReadOps) > 0 {
+		result.Operations = append(result.Operations, invalidReadOps...)
+		result.ErrorCount = len(invalidReadOps)
+		return result
+	}
+
 	// Track new names within each directory to handle conflicts and duplicates
 	dirNames := make(map[string]map[string]nameUsage) // dir -> name -> usage
 
@@ -101,6 +108,21 @@ func (r *Renamer) RenameFiles(files []collector.FileInfo) Result {
 	}
 
 	return result
+}
+
+func (r *Renamer) collectInvalidSourceReadOps(files []collector.FileInfo) []RenameOperation {
+	invalidOps := make([]RenameOperation, 0)
+	for _, file := range files {
+		if err := r.validator.ValidatePathForRead(file.Path); err != nil {
+			invalidOps = append(invalidOps, RenameOperation{
+				OriginalPath: file.Path,
+				OriginalName: file.Name,
+				Error:        fmt.Errorf("source path escapes root: %w", err),
+			})
+		}
+	}
+
+	return invalidOps
 }
 
 // processFile handles renaming a single file.

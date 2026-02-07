@@ -97,6 +97,13 @@ func (d *Deduplicator) FindDuplicates(files []collector.FileInfo) Result {
 
 	safeFiles, invalidReadOps := d.filterUnsafeReadPaths(files)
 	result.Operations = append(result.Operations, invalidReadOps...)
+	if len(invalidReadOps) > 0 {
+		sort.Slice(result.Operations, func(i, j int) bool {
+			return result.Operations[i].Path < result.Operations[j].Path
+		})
+		result.calculateCounts()
+		return result
+	}
 
 	// Step 1: Group by size (files with unique sizes cannot be duplicates).
 	sizeGroups := groupBySize(safeFiles)
@@ -121,24 +128,27 @@ func (d *Deduplicator) FindDuplicates(files []collector.FileInfo) Result {
 		return result.Operations[i].Path < result.Operations[j].Path
 	})
 
-	// Calculate counts.
-	for _, op := range result.Operations {
+	result.calculateCounts()
+
+	return result
+}
+
+func (r *Result) calculateCounts() {
+	for _, op := range r.Operations {
 		if op.OriginalOf != "" {
-			result.DuplicatesFound++
+			r.DuplicatesFound++
 		}
 
 		switch {
 		case op.Error != nil:
-			result.ErrorCount++
+			r.ErrorCount++
 		case op.Skipped:
-			result.SkippedCount++
+			r.SkippedCount++
 		default:
-			result.DeletedCount++
-			result.BytesRecovered += op.Size
+			r.DeletedCount++
+			r.BytesRecovered += op.Size
 		}
 	}
-
-	return result
 }
 
 func (d *Deduplicator) filterUnsafeReadPaths(files []collector.FileInfo) ([]collector.FileInfo, []DeleteOperation) {

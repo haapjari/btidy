@@ -85,6 +85,23 @@ func (f *Flattener) FlattenFiles(files []collector.FileInfo) Result {
 
 	// Step 1: Pre-compute hashes for all files using parallel hashing.
 	fileHashes, invalidReadErrors := f.computeHashes(files)
+	if len(invalidReadErrors) > 0 {
+		for i := range files {
+			pathErr, hasErr := invalidReadErrors[files[i].Path]
+			if !hasErr {
+				continue
+			}
+
+			op := MoveOperation{
+				OriginalPath: files[i].Path,
+				Error:        pathErr,
+			}
+			result.Operations = append(result.Operations, op)
+			result.ErrorCount++
+		}
+
+		return result
+	}
 
 	// Step 2: Track seen content hashes to detect duplicates.
 	seenHash := make(map[string]string) // hash -> path of first occurrence
@@ -93,16 +110,6 @@ func (f *Flattener) FlattenFiles(files []collector.FileInfo) Result {
 	nameCount := make(map[string]int)
 
 	for i := range files {
-		if pathErr, hasErr := invalidReadErrors[files[i].Path]; hasErr {
-			op := MoveOperation{
-				OriginalPath: files[i].Path,
-				Error:        pathErr,
-			}
-			result.Operations = append(result.Operations, op)
-			result.ErrorCount++
-			continue
-		}
-
 		hash := fileHashes[files[i].Path]
 		op := f.processFile(&files[i], hash, seenHash, nameCount)
 		result.Operations = append(result.Operations, op)
