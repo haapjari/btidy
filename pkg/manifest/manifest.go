@@ -90,20 +90,28 @@ func (g *Generator) Generate(opts GenerateOptions) (*Manifest, error) {
 		return nil, fmt.Errorf("failed to collect files: %w", err)
 	}
 
+	readableFiles := make([]collector.FileInfo, 0, len(files))
+	for _, file := range files {
+		if err := g.validator.ValidatePathForRead(file.Path); err != nil {
+			return nil, fmt.Errorf("unsafe manifest input path %q: %w", file.Path, err)
+		}
+		readableFiles = append(readableFiles, file)
+	}
+
 	manifest := &Manifest{
 		Version:   1,
 		CreatedAt: time.Now().UTC(),
 		RootPath:  g.rootDir,
-		Entries:   make([]ManifestEntry, 0, len(files)),
+		Entries:   make([]ManifestEntry, 0, len(readableFiles)),
 	}
 
-	if len(files) == 0 {
+	if len(readableFiles) == 0 {
 		return manifest, nil
 	}
 
 	// Prepare files for parallel hashing
-	toHash := make([]hasher.FileToHash, len(files))
-	for i, f := range files {
+	toHash := make([]hasher.FileToHash, len(readableFiles))
+	for i, f := range readableFiles {
 		toHash[i] = hasher.FileToHash{
 			Path: f.Path,
 			Size: f.Size,
@@ -111,8 +119,8 @@ func (g *Generator) Generate(opts GenerateOptions) (*Manifest, error) {
 	}
 
 	// Create a map for quick lookup of file info by path
-	fileInfoByPath := make(map[string]collector.FileInfo, len(files))
-	for _, f := range files {
+	fileInfoByPath := make(map[string]collector.FileInfo, len(readableFiles))
+	for _, f := range readableFiles {
 		fileInfoByPath[f.Path] = f
 	}
 
@@ -120,7 +128,7 @@ func (g *Generator) Generate(opts GenerateOptions) (*Manifest, error) {
 	results := g.hasher.HashFilesWithSizes(toHash)
 
 	processed := 0
-	total := len(files)
+	total := len(readableFiles)
 
 	for result := range results {
 		processed++

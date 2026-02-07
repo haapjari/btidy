@@ -95,8 +95,11 @@ func (d *Deduplicator) FindDuplicates(files []collector.FileInfo) Result {
 		return result
 	}
 
+	safeFiles, invalidReadOps := d.filterUnsafeReadPaths(files)
+	result.Operations = append(result.Operations, invalidReadOps...)
+
 	// Step 1: Group by size (files with unique sizes cannot be duplicates).
-	sizeGroups := groupBySize(files)
+	sizeGroups := groupBySize(safeFiles)
 
 	// Step 2: For each size group with multiple files, find duplicates by hash.
 	for _, group := range sizeGroups {
@@ -120,7 +123,10 @@ func (d *Deduplicator) FindDuplicates(files []collector.FileInfo) Result {
 
 	// Calculate counts.
 	for _, op := range result.Operations {
-		result.DuplicatesFound++
+		if op.OriginalOf != "" {
+			result.DuplicatesFound++
+		}
+
 		switch {
 		case op.Error != nil:
 			result.ErrorCount++
@@ -133,6 +139,26 @@ func (d *Deduplicator) FindDuplicates(files []collector.FileInfo) Result {
 	}
 
 	return result
+}
+
+func (d *Deduplicator) filterUnsafeReadPaths(files []collector.FileInfo) ([]collector.FileInfo, []DeleteOperation) {
+	safeFiles := make([]collector.FileInfo, 0, len(files))
+	invalidReadOps := make([]DeleteOperation, 0)
+
+	for _, file := range files {
+		if err := d.validator.ValidatePathForRead(file.Path); err != nil {
+			invalidReadOps = append(invalidReadOps, DeleteOperation{
+				Path:  file.Path,
+				Size:  file.Size,
+				Error: fmt.Errorf("path escapes root: %w", err),
+			})
+			continue
+		}
+
+		safeFiles = append(safeFiles, file)
+	}
+
+	return safeFiles, invalidReadOps
 }
 
 // groupBySize groups files by their size.

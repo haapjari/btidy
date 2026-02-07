@@ -84,7 +84,7 @@ func (f *Flattener) FlattenFiles(files []collector.FileInfo) Result {
 	}
 
 	// Step 1: Pre-compute hashes for all files using parallel hashing.
-	fileHashes := f.computeHashes(files)
+	fileHashes, invalidReadErrors := f.computeHashes(files)
 
 	// Step 2: Track seen content hashes to detect duplicates.
 	seenHash := make(map[string]string) // hash -> path of first occurrence
@@ -93,6 +93,16 @@ func (f *Flattener) FlattenFiles(files []collector.FileInfo) Result {
 	nameCount := make(map[string]int)
 
 	for i := range files {
+		if pathErr, hasErr := invalidReadErrors[files[i].Path]; hasErr {
+			op := MoveOperation{
+				OriginalPath: files[i].Path,
+				Error:        pathErr,
+			}
+			result.Operations = append(result.Operations, op)
+			result.ErrorCount++
+			continue
+		}
+
 		hash := fileHashes[files[i].Path]
 		op := f.processFile(&files[i], hash, seenHash, nameCount)
 		result.Operations = append(result.Operations, op)
@@ -117,16 +127,22 @@ func (f *Flattener) FlattenFiles(files []collector.FileInfo) Result {
 }
 
 // computeHashes pre-computes SHA256 hashes for all files using parallel hashing.
-func (f *Flattener) computeHashes(files []collector.FileInfo) map[string]string {
+func (f *Flattener) computeHashes(files []collector.FileInfo) (map[string]string, map[string]error) {
 	hashes := make(map[string]string, len(files))
+	invalidReadErrors := make(map[string]error)
 
 	// Prepare files for parallel hashing.
-	toHash := make([]hasher.FileToHash, len(files))
-	for i, file := range files {
-		toHash[i] = hasher.FileToHash{
+	toHash := make([]hasher.FileToHash, 0, len(files))
+	for _, file := range files {
+		if err := f.validator.ValidatePathForRead(file.Path); err != nil {
+			invalidReadErrors[file.Path] = fmt.Errorf("source path escapes root: %w", err)
+			continue
+		}
+
+		toHash = append(toHash, hasher.FileToHash{
 			Path: file.Path,
 			Size: file.Size,
-		}
+		})
 	}
 
 	// Hash files in parallel.
@@ -136,7 +152,7 @@ func (f *Flattener) computeHashes(files []collector.FileInfo) map[string]string 
 		}
 	}
 
-	return hashes
+	return hashes, invalidReadErrors
 }
 
 func (f *Flattener) processFile(file *collector.FileInfo, hash string, seenHash map[string]string, nameCount map[string]int) MoveOperation {
