@@ -157,8 +157,22 @@ func (r *Renamer) processFile(f collector.FileInfo, dirNames map[string]map[stri
 	}
 
 	// Skip if target already exists (safety check)
-	if info, err := os.Stat(op.NewPath); err == nil {
+	if _, err := os.Lstat(op.NewPath); err == nil {
+		if err := r.validator.ValidatePathForRead(op.NewPath); err != nil {
+			op.Error = fmt.Errorf("destination path escapes root: %w", err)
+			return op
+		}
+
+		info, err := os.Stat(op.NewPath)
+		if err != nil {
+			op.Error = fmt.Errorf("failed to stat existing target: %w", err)
+			return op
+		}
+
 		r.handleExistingTarget(&op, f, info)
+		return op
+	} else if !os.IsNotExist(err) {
+		op.Error = fmt.Errorf("failed to inspect target path: %w", err)
 		return op
 	}
 
@@ -184,6 +198,13 @@ func (r *Renamer) Root() string {
 }
 
 func (r *Renamer) sameContent(pathA, pathB string) (bool, error) {
+	if err := r.validator.ValidatePathForRead(pathA); err != nil {
+		return false, fmt.Errorf("path escapes root: %w", err)
+	}
+	if err := r.validator.ValidatePathForRead(pathB); err != nil {
+		return false, fmt.Errorf("path escapes root: %w", err)
+	}
+
 	hashA, err := r.hasher.ComputeHash(pathA)
 	if err != nil {
 		return false, fmt.Errorf("failed to hash %s: %w", pathA, err)
