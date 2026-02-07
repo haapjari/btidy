@@ -1,0 +1,107 @@
+package main
+
+import (
+	"fmt"
+
+	"github.com/spf13/cobra"
+
+	"file-organizer/pkg/flattener"
+)
+
+func buildFlattenCommand() *cobra.Command {
+	return &cobra.Command{
+		Use:   "flatten [path]",
+		Short: "Move all files to root directory, remove duplicates",
+		Long: `Moves all files to root directory:
+  - Removes true duplicates (same name + size + mtime)
+  - Adds suffix for name conflicts
+  - Deletes empty directories
+
+Examples:
+  file-organizer flatten --dry-run ./backup   # Preview changes
+  file-organizer flatten ./backup             # Apply changes
+  file-organizer flatten -v ./backup          # Verbose output
+
+Before:
+  backup/
+    Documents/Work/report.pdf
+    Photos/Vacation/photo.jpg
+    Music/song.mp3
+
+After:
+  backup/
+    report.pdf
+    photo.jpg
+    song.mp3`,
+		Args: cobra.ExactArgs(1),
+		RunE: runFlatten,
+	}
+}
+
+func runFlatten(_ *cobra.Command, args []string) error {
+	absPath, err := validateAndResolvePath(args[0])
+	if err != nil {
+		return err
+	}
+
+	printDryRunBanner()
+	printCommandHeader("FLATTEN", absPath)
+
+	files, progress, err := collectFilesForCommand(absPath, true)
+	if err != nil {
+		return err
+	}
+
+	if len(files) == 0 {
+		progress.Stop()
+		fmt.Println("No files to process.")
+		return nil
+	}
+
+	f, err := flattener.New(absPath, dryRun)
+	if err != nil {
+		progress.Stop()
+		return fmt.Errorf("failed to create flattener: %w", err)
+	}
+
+	result := f.FlattenFiles(files)
+	progress.Stop()
+
+	if verbose || dryRun {
+		for _, op := range result.Operations {
+			printFlattenOperation(op)
+		}
+		fmt.Println()
+	}
+
+	lines := []string{
+		fmt.Sprintf("Total files:     %d", result.TotalFiles),
+		fmt.Sprintf("Moved:           %d", result.MovedCount),
+		fmt.Sprintf("Duplicates:      %d", result.DuplicatesCount),
+		fmt.Sprintf("Skipped:         %d", result.SkippedCount),
+		fmt.Sprintf("Errors:          %d", result.ErrorCount),
+	}
+	if !dryRun {
+		lines = append(lines, fmt.Sprintf("Dirs removed:    %d", result.DeletedDirsCount))
+	}
+
+	printSummary(lines...)
+	printDryRunHint()
+
+	return nil
+}
+
+func printFlattenOperation(op flattener.MoveOperation) {
+	switch {
+	case op.Error != nil:
+		fmt.Printf("ERROR: %s: %v\n", op.OriginalPath, op.Error)
+	case op.Duplicate:
+		fmt.Printf("DUPLICATE: %s\n", op.OriginalPath)
+		fmt.Printf("   KEPT: %s\n", op.NewPath)
+	case op.Skipped:
+		fmt.Printf("SKIP: %s (%s)\n", op.OriginalPath, op.SkipReason)
+	default:
+		fmt.Printf("MOVE: %s\n", op.OriginalPath)
+		fmt.Printf("  TO: %s\n", op.NewPath)
+	}
+}

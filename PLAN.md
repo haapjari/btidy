@@ -29,34 +29,6 @@ Out of scope (for this refactor cycle):
 
 ## Refactor Phases
 
-### Phase 1: Split and Simplify CLI Layer
-
-Tasks:
-
-- Split `cmd/main.go` into:
-  - `cmd/root.go`
-  - `cmd/rename.go`
-  - `cmd/flatten.go`
-  - `cmd/duplicate.go`
-  - `cmd/manifest.go`
-  - `cmd/common.go` (shared helpers)
-- Extract repeated command flow into reusable helpers:
-  - path validation
-  - file collection setup
-  - progress lifecycle
-  - summary rendering
-- Centralize default skip files in one place.
-
-Deliverables:
-
-- Smaller command files with focused responsibility.
-- Shared constants/helpers replacing repeated literals.
-
-Acceptance criteria:
-
-- No behavior changes for existing commands except formatting cleanup.
-- `go run ./cmd --help` and per-command help remain accurate.
-
 ### Phase 2: Introduce Use-Case Orchestration Layer
 
 Tasks:
@@ -132,13 +104,11 @@ Acceptance criteria:
 
 ## PR Plan (Recommended Sequence)
 
-1. CLI file split with zero behavior change.
-2. Shared CLI helpers/constants extraction.
-3. Use-case layer extraction for one command (pilot, e.g., manifest).
-4. Use-case extraction for rename/flatten/duplicate.
-5. Renamer correctness hardening (hash-based duplicate safety).
-6. Worker/config unification and performance pass.
-7. Cleanup dead code and docs alignment.
+1. Use-case layer extraction for one command (pilot, e.g., manifest).
+2. Use-case extraction for rename/flatten/duplicate.
+3. Renamer correctness hardening (hash-based duplicate safety).
+4. Worker/config unification and performance pass.
+5. Cleanup dead code and docs alignment.
 
 ## Regression Risk Areas and Guards
 
