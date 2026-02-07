@@ -36,8 +36,13 @@ func New(root string) (*Validator, error) {
 		return nil, fmt.Errorf("%w: %w", ErrInvalidRoot, err)
 	}
 
+	resolvedRoot, err := filepath.EvalSymlinks(absRoot)
+	if err != nil {
+		return nil, fmt.Errorf("%w: %w", ErrInvalidRoot, err)
+	}
+
 	// Clean the path to remove any . or .. components.
-	cleanRoot := filepath.Clean(absRoot)
+	cleanRoot := filepath.Clean(resolvedRoot)
 
 	// Verify it's an existing directory.
 	info, err := os.Stat(cleanRoot)
@@ -127,10 +132,10 @@ func (v *Validator) ValidateSymlink(symlinkPath string) error {
 
 // SafeRename renames a file only if both source and destination are within root.
 func (v *Validator) SafeRename(oldPath, newPath string) error {
-	if err := v.containsPath(oldPath); err != nil {
+	if err := v.validatePathForMutation(oldPath); err != nil {
 		return fmt.Errorf("source %w: %s", err, oldPath)
 	}
-	if err := v.containsPath(newPath); err != nil {
+	if err := v.validatePathForMutation(newPath); err != nil {
 		return fmt.Errorf("destination %w: %s", err, newPath)
 	}
 
@@ -139,7 +144,7 @@ func (v *Validator) SafeRename(oldPath, newPath string) error {
 
 // SafeRemove removes a file only if it's within root.
 func (v *Validator) SafeRemove(path string) error {
-	if err := v.containsPath(path); err != nil {
+	if err := v.validatePathForMutation(path); err != nil {
 		return fmt.Errorf("%w: %s", err, path)
 	}
 
@@ -161,7 +166,7 @@ func (v *Validator) SafeRemoveDir(path string) error {
 		return errCannotRemoveRoot
 	}
 
-	if err := v.containsPath(path); err != nil {
+	if err := v.validatePathForMutation(path); err != nil {
 		return fmt.Errorf("%w: %s", err, path)
 	}
 
@@ -202,4 +207,43 @@ func (v *Validator) ResolveSafePath(basePath, relativePath string) (string, erro
 	}
 
 	return cleanPath, nil
+}
+
+func (v *Validator) validatePathForMutation(path string) error {
+	if err := v.containsPath(path); err != nil {
+		return err
+	}
+
+	resolvedPath, err := resolveExistingPath(path)
+	if err != nil {
+		return err
+	}
+
+	if err := v.containsPath(resolvedPath); err != nil {
+		return fmt.Errorf("%w: %s -> %s", ErrSymlinkEscape, path, resolvedPath)
+	}
+
+	return nil
+}
+
+func resolveExistingPath(path string) (string, error) {
+	absPath, err := filepath.Abs(path)
+	if err != nil {
+		return "", fmt.Errorf("cannot resolve path: %w", err)
+	}
+
+	resolved, err := filepath.EvalSymlinks(absPath)
+	if err == nil {
+		return resolved, nil
+	}
+	if !os.IsNotExist(err) {
+		return "", fmt.Errorf("cannot resolve symlinks: %w", err)
+	}
+
+	parent := filepath.Dir(absPath)
+	if parent == absPath {
+		return "", fmt.Errorf("cannot resolve symlinks: %w", err)
+	}
+
+	return resolveExistingPath(parent)
 }

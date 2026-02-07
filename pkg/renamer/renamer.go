@@ -47,7 +47,7 @@ var tbdPrefixPattern = regexp.MustCompile(`^\d{4}-TBD-TBD_`)
 
 type nameUsage struct {
 	count int
-	file  collector.FileInfo
+	size  int64
 	hash  string
 }
 
@@ -109,6 +109,10 @@ func (r *Renamer) processFile(f collector.FileInfo, dirNames map[string]map[stri
 
 	// Validate source path is within root.
 	if err := r.validator.ValidatePath(f.Path); err != nil {
+		op.Error = fmt.Errorf("source path escapes root: %w", err)
+		return op
+	}
+	if err := r.validator.ValidateSymlink(f.Path); err != nil {
 		op.Error = fmt.Errorf("source path escapes root: %w", err)
 		return op
 	}
@@ -174,10 +178,6 @@ func (r *Renamer) Root() string {
 	return r.validator.Root()
 }
 
-func sameFileInfo(a, b collector.FileInfo) bool {
-	return a.Size == b.Size && a.ModTime.Equal(b.ModTime)
-}
-
 func (r *Renamer) sameContent(pathA, pathB string) (bool, error) {
 	hashA, err := r.hasher.ComputeHash(pathA)
 	if err != nil {
@@ -202,13 +202,13 @@ func (r *Renamer) resolveNameConflict(op *RenameOperation, f collector.FileInfo,
 
 		usageMap[baseName] = nameUsage{
 			count: 1,
-			file:  f,
+			size:  f.Size,
 			hash:  hash,
 		}
 		return baseName, false
 	}
 
-	if sameFileInfo(usage.file, f) {
+	if usage.size == f.Size {
 		currentHash, err := r.hasher.ComputeHash(f.Path)
 		if err == nil && usage.hash != "" && currentHash == usage.hash {
 			r.markAsDuplicate(op, f)
@@ -237,7 +237,7 @@ func (r *Renamer) markAsDuplicate(op *RenameOperation, f collector.FileInfo) {
 }
 
 func (r *Renamer) handleExistingTarget(op *RenameOperation, f collector.FileInfo, info os.FileInfo) {
-	if info.Size() != f.Size || !info.ModTime().Equal(f.ModTime) {
+	if info.Size() != f.Size {
 		op.Skipped = true
 		op.SkipReason = "target file already exists"
 		return

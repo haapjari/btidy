@@ -228,6 +228,10 @@ func (d *Deduplicator) deleteFile(file collector.FileInfo, originalPath, hash st
 		op.Error = fmt.Errorf("path escapes root: %w", err)
 		return op
 	}
+	if err := d.validator.ValidateSymlink(file.Path); err != nil {
+		op.Error = fmt.Errorf("path escapes root: %w", err)
+		return op
+	}
 
 	// Perform deletion if not dry run.
 	if !d.dryRun {

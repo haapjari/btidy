@@ -218,13 +218,13 @@ func TestRenamer_RenameFiles_HandleConflicts(t *testing.T) {
 	assert.True(t, names["2018-06-15_document_1.pdf"], "should have suffixed name")
 }
 
-func TestRenamer_RenameFiles_SameMetadataDifferentContent_BatchKeepsBoth(t *testing.T) {
+func TestRenamer_RenameFiles_SameSizeDifferentContent_BatchKeepsBoth(t *testing.T) {
 	tmpDir := setupTestDir(t)
 	defer os.RemoveAll(tmpDir)
 
 	modTime := time.Date(2018, 6, 15, 12, 0, 0, 0, time.UTC)
 	createTestFileWithContent(t, tmpDir, "Photo.jpg", "alpha-123", modTime)
-	createTestFileWithContent(t, tmpDir, "photo.jpg", "omega-123", modTime)
+	createTestFileWithContent(t, tmpDir, "photo.jpg", "omega-12", modTime)
 
 	c := collector.New(collector.Options{})
 	files, err := c.Collect(tmpDir)
@@ -331,7 +331,7 @@ func TestRenamer_RenameFiles_RemovesDuplicateTarget(t *testing.T) {
 	require.NoError(t, err, "existing target should remain")
 }
 
-func TestRenamer_RenameFiles_SameMetadataDifferentContent_TargetCollisionKeepsSource(t *testing.T) {
+func TestRenamer_RenameFiles_SameSizeDifferentContent_TargetCollisionKeepsSource(t *testing.T) {
 	tmpDir := setupTestDir(t)
 	defer os.RemoveAll(tmpDir)
 

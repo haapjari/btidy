@@ -48,6 +48,27 @@ func TestNew(t *testing.T) {
 		v, err := safepath.New(subDir)
 		require.NoError(t, err)
 		assert.True(t, filepath.IsAbs(v.Root()))
+		resolved, err := filepath.EvalSymlinks(subDir)
+		require.NoError(t, err)
+		assert.Equal(t, resolved, v.Root())
+	})
+
+	t.Run("symlink root resolves to real path", func(t *testing.T) {
+		t.Parallel()
+		tmpDir := t.TempDir()
+		targetDir := filepath.Join(tmpDir, "target")
+		require.NoError(t, os.MkdirAll(targetDir, 0o755))
+
+		linkPath := filepath.Join(tmpDir, "root_link")
+		if err := os.Symlink(targetDir, linkPath); err != nil {
+			t.Skip("symlinks not supported")
+		}
+
+		v, err := safepath.New(linkPath)
+		require.NoError(t, err)
+		resolved, err := filepath.EvalSymlinks(linkPath)
+		require.NoError(t, err)
+		assert.Equal(t, resolved, v.Root())
 	})
 }
 
@@ -242,6 +263,34 @@ func TestSafeRename(t *testing.T) {
 		dst := filepath.Join(tmpDir, "imported.txt")
 		assert.Error(t, v.SafeRename(outsideFile, dst))
 	})
+
+	t.Run("rename through symlink outside root blocked", func(t *testing.T) {
+		t.Parallel()
+		baseDir := t.TempDir()
+		rootDir := filepath.Join(baseDir, "root")
+		outsideDir := filepath.Join(baseDir, "outside")
+		require.NoError(t, os.MkdirAll(rootDir, 0o755))
+		require.NoError(t, os.MkdirAll(outsideDir, 0o755))
+
+		outsideFile := filepath.Join(outsideDir, "secret.txt")
+		require.NoError(t, os.WriteFile(outsideFile, []byte("secret"), 0o644))
+
+		linkPath := filepath.Join(rootDir, "escape_link")
+		if err := os.Symlink(outsideFile, linkPath); err != nil {
+			t.Skip("symlinks not supported")
+		}
+
+		v, err := safepath.New(rootDir)
+		require.NoError(t, err)
+
+		dest := filepath.Join(rootDir, "dest.txt")
+		err = v.SafeRename(linkPath, dest)
+		require.Error(t, err)
+
+		assert.FileExists(t, outsideFile)
+		assert.FileExists(t, linkPath)
+		assert.NoFileExists(t, dest)
+	})
 }
 
 func TestSafeRemove(t *testing.T) {
@@ -269,6 +318,32 @@ func TestSafeRemove(t *testing.T) {
 
 		outsideFile := filepath.Join(tmpDir, "..", "should_not_delete.txt")
 		assert.Error(t, v.SafeRemove(outsideFile))
+	})
+
+	t.Run("remove through symlink outside root blocked", func(t *testing.T) {
+		t.Parallel()
+		baseDir := t.TempDir()
+		rootDir := filepath.Join(baseDir, "root")
+		outsideDir := filepath.Join(baseDir, "outside")
+		require.NoError(t, os.MkdirAll(rootDir, 0o755))
+		require.NoError(t, os.MkdirAll(outsideDir, 0o755))
+
+		outsideFile := filepath.Join(outsideDir, "secret.txt")
+		require.NoError(t, os.WriteFile(outsideFile, []byte("secret"), 0o644))
+
+		linkPath := filepath.Join(rootDir, "escape_link")
+		if err := os.Symlink(outsideFile, linkPath); err != nil {
+			t.Skip("symlinks not supported")
+		}
+
+		v, err := safepath.New(rootDir)
+		require.NoError(t, err)
+
+		err = v.SafeRemove(linkPath)
+		require.Error(t, err)
+
+		assert.FileExists(t, outsideFile)
+		assert.FileExists(t, linkPath)
 	})
 }
 

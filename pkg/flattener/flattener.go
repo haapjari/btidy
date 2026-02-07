@@ -136,6 +136,10 @@ func (f *Flattener) processFile(file *collector.FileInfo, hash string, seenHash 
 		op.Error = fmt.Errorf("source path escapes root: %w", err)
 		return op
 	}
+	if err := f.validator.ValidateSymlink(file.Path); err != nil {
+		op.Error = fmt.Errorf("source path escapes root: %w", err)
+		return op
+	}
 
 	// If we couldn't compute hash, skip this file with error.
 	if hash == "" {
