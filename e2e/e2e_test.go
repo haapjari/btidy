@@ -3,6 +3,7 @@ package e2e
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -30,7 +31,7 @@ func (r cmdResult) combinedOutput() string {
 func resolveRepoRoot() (string, error) {
 	_, filename, _, ok := runtime.Caller(0)
 	if !ok {
-		return "", fmt.Errorf("failed to resolve repo root")
+		return "", errors.New("failed to resolve repo root")
 	}
 
 	root := filepath.Dir(filepath.Dir(filename))

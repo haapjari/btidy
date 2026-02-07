@@ -1,4 +1,4 @@
-.PHONY: all build test test-race test-cover test-e2e clean lint fmt vet check pre-commit tools help
+.PHONY: all build test test-race test-cover test-e2e clean lint fmt vet check verify pre-commit tools help
 
 # Binary name
 BINARY := btidy
@@ -45,6 +45,7 @@ help:
 	@echo "  fmt          - Format code"
 	@echo "  vet          - Run go vet"
 	@echo "  check        - Run fmt, vet, lint, test-race"
+	@echo "  verify       - Alias for check"
 	@echo "  pre-commit   - Run fmt, lint, test-race (required before commit)"
 	@echo "  tools        - Install development tools to .tools/"
 	@echo "  clean        - Clean build artifacts and tools"
@@ -115,6 +116,8 @@ vet:
 # Combined checks
 check: fmt vet lint test-race
 	@echo "All checks passed!"
+
+verify: check
 
 # Pre-commit hook - run before every commit
 pre-commit: fmt lint test-race
