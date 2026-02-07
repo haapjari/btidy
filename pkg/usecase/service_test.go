@@ -128,3 +128,55 @@ func TestService_RunManifest_WithSkipFiles(t *testing.T) {
 	_, err = os.Stat(outputPath)
 	require.NoError(t, err, "manifest file must be written")
 }
+
+func TestService_RunManifest_RelativeOutputResolvesInsideTarget(t *testing.T) {
+	t.Parallel()
+
+	tmpDir := t.TempDir()
+	testutil.CreateFileWithModTime(
+		t,
+		filepath.Join(tmpDir, "keep.txt"),
+		"keep",
+		time.Date(2018, 6, 15, 12, 0, 0, 0, time.UTC),
+	)
+
+	s := New(Options{})
+	execution, err := s.RunManifest(ManifestRequest{
+		TargetDir:  tmpDir,
+		OutputPath: "manifest.json",
+		Workers:    1,
+	})
+	require.NoError(t, err)
+
+	expectedOutputPath := filepath.Join(tmpDir, "manifest.json")
+	assert.Equal(t, expectedOutputPath, execution.OutputPath)
+	_, err = os.Stat(expectedOutputPath)
+	require.NoError(t, err)
+}
+
+func TestService_RunManifest_OutputOutsideTargetRejected(t *testing.T) {
+	t.Parallel()
+
+	tmpDir := t.TempDir()
+	testutil.CreateFileWithModTime(
+		t,
+		filepath.Join(tmpDir, "keep.txt"),
+		"keep",
+		time.Date(2018, 6, 15, 12, 0, 0, 0, time.UTC),
+	)
+
+	outsideDir := t.TempDir()
+	outsideOutputPath := filepath.Join(outsideDir, "manifest.json")
+
+	s := New(Options{})
+	_, err := s.RunManifest(ManifestRequest{
+		TargetDir:  tmpDir,
+		OutputPath: outsideOutputPath,
+		Workers:    1,
+	})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "manifest output path must stay within target directory")
+
+	_, statErr := os.Stat(outsideOutputPath)
+	assert.True(t, os.IsNotExist(statErr))
+}

@@ -1,6 +1,7 @@
 package flattener
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -12,6 +13,7 @@ import (
 
 	"btidy/internal/testutil"
 	"btidy/pkg/collector"
+	"btidy/pkg/safepath"
 )
 
 func setupTestDir(t *testing.T) string {
@@ -329,4 +331,37 @@ func TestFlattener_Root(t *testing.T) {
 func TestNew_InvalidRoot(t *testing.T) {
 	_, err := NewWithWorkers("/nonexistent/path/12345", false, 2)
 	assert.Error(t, err)
+}
+
+func TestFlattener_FlattenFiles_UnsafeSymlinkFailsBeforeMutations(t *testing.T) {
+	tmpDir := setupTestDir(t)
+	defer os.RemoveAll(tmpDir)
+
+	outsideDir := t.TempDir()
+	outsideFile := filepath.Join(outsideDir, "outside.txt")
+	require.NoError(t, os.WriteFile(outsideFile, []byte("outside"), 0o600))
+
+	safeFile := filepath.Join(tmpDir, "nested", "safe.txt")
+	createTestFile(t, safeFile, "safe-content", time.Now().UTC())
+
+	linkPath := filepath.Join(tmpDir, "nested", "escape_link.txt")
+	if err := os.Symlink(outsideFile, linkPath); err != nil {
+		t.Skipf("symlink not supported: %v", err)
+	}
+
+	c := collector.New(collector.Options{})
+	files, err := c.Collect(tmpDir)
+	require.NoError(t, err)
+
+	f, err := New(tmpDir, false)
+	require.NoError(t, err)
+	result := f.FlattenFiles(files)
+
+	assert.Equal(t, 0, result.MovedCount)
+	assert.Equal(t, 1, result.ErrorCount)
+	require.Len(t, result.Operations, 1)
+	assert.True(t, errors.Is(result.Operations[0].Error, safepath.ErrSymlinkEscape))
+
+	assert.FileExists(t, safeFile)
+	assert.NoFileExists(t, filepath.Join(tmpDir, "safe.txt"))
 }

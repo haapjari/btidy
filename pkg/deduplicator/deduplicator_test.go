@@ -2,6 +2,7 @@ package deduplicator
 
 import (
 	"crypto/rand"
+	"errors"
 	"os"
 	"path/filepath"
 	"testing"
@@ -13,6 +14,7 @@ import (
 	"btidy/internal/testutil"
 	"btidy/pkg/collector"
 	"btidy/pkg/hasher"
+	"btidy/pkg/safepath"
 )
 
 func setupTestDir(t *testing.T) string {
@@ -694,4 +696,39 @@ func TestDeduplicator_FindDuplicates_KeepsDeterministically(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, entries, 1)
 	assert.Equal(t, "aaa.txt", entries[0].Name())
+}
+
+func TestDeduplicator_FindDuplicates_UnsafeSymlinkFailsBeforeDeletes(t *testing.T) {
+	tmpDir := setupTestDir(t)
+	defer os.RemoveAll(tmpDir)
+
+	modTime := time.Date(2018, 6, 15, 12, 0, 0, 0, time.UTC)
+	createTestFile(t, filepath.Join(tmpDir, "a.txt"), "same", modTime)
+	createTestFile(t, filepath.Join(tmpDir, "b.txt"), "same", modTime)
+
+	outsideDir := t.TempDir()
+	outsideFile := filepath.Join(outsideDir, "outside.txt")
+	require.NoError(t, os.WriteFile(outsideFile, []byte("outside"), 0o600))
+
+	linkPath := filepath.Join(tmpDir, "escape_link.txt")
+	if err := os.Symlink(outsideFile, linkPath); err != nil {
+		t.Skipf("symlink not supported: %v", err)
+	}
+
+	c := collector.New(collector.Options{})
+	files, err := c.Collect(tmpDir)
+	require.NoError(t, err)
+
+	d, err := New(tmpDir, false)
+	require.NoError(t, err)
+	result := d.FindDuplicates(files)
+
+	assert.Equal(t, 1, result.ErrorCount)
+	assert.Equal(t, 0, result.DuplicatesFound)
+	assert.Equal(t, 0, result.DeletedCount)
+	require.Len(t, result.Operations, 1)
+	assert.True(t, errors.Is(result.Operations[0].Error, safepath.ErrSymlinkEscape))
+
+	assert.FileExists(t, filepath.Join(tmpDir, "a.txt"))
+	assert.FileExists(t, filepath.Join(tmpDir, "b.txt"))
 }

@@ -417,15 +417,11 @@ func TestEndToEndPipeline_ManifestIntegrity(t *testing.T) {
 	binPath := binaryPath(t)
 	workspace := t.TempDir()
 	target := filepath.Join(workspace, "target")
-	artifacts := filepath.Join(workspace, "artifacts")
 	outsideSentinel := filepath.Join(workspace, "outside-sentinel.txt")
 	modTime := time.Date(2023, 9, 18, 7, 45, 0, 0, time.UTC)
 
 	if err := os.MkdirAll(target, 0o755); err != nil {
 		t.Fatalf("failed to create target: %v", err)
-	}
-	if err := os.MkdirAll(artifacts, 0o755); err != nil {
-		t.Fatalf("failed to create artifacts directory: %v", err)
 	}
 	writeFile(t, outsideSentinel, "do-not-touch", modTime)
 
@@ -440,8 +436,8 @@ func TestEndToEndPipeline_ManifestIntegrity(t *testing.T) {
 	writeFile(t, filepath.Join(target, "other", "file.txt"), "beta", modTime)
 	writeFile(t, filepath.Join(target, "other", "unique.txt"), "unique", modTime)
 
-	beforeManifest := filepath.Join(artifacts, "before.json")
-	afterManifest := filepath.Join(artifacts, "after.json")
+	beforeManifest := filepath.Join(target, ".DS_Store")
+	afterManifest := filepath.Join(target, "Thumbs.db")
 
 	before := runBinary(t, binPath, "--workers", "1", "manifest", target, "-o", beforeManifest)
 	if before.err != nil {
@@ -524,7 +520,7 @@ func TestEndToEndInvalidTargetPaths(t *testing.T) {
 	assertCommandFailed(t, missingTarget, "cannot access", "directory", missingPath)
 }
 
-func TestEndToEndSymlinkEscapeBlocked(t *testing.T) {
+func TestEndToEndRename_SymlinkEscapeBlocked(t *testing.T) {
 	binPath := binaryPath(t)
 	root := t.TempDir()
 	outside := t.TempDir()
@@ -532,6 +528,10 @@ func TestEndToEndSymlinkEscapeBlocked(t *testing.T) {
 
 	outsideFile := filepath.Join(outside, "outside.txt")
 	writeFile(t, outsideFile, "outside", modTime)
+	outsideBefore, err := os.ReadFile(outsideFile)
+	if err != nil {
+		t.Fatalf("failed to read outside sentinel before rename: %v", err)
+	}
 
 	linkPath := filepath.Join(root, "escape_link.txt")
 	if err := os.Symlink(outsideFile, linkPath); err != nil {
@@ -539,14 +539,7 @@ func TestEndToEndSymlinkEscapeBlocked(t *testing.T) {
 	}
 
 	result := runBinary(t, binPath, "rename", "--dry-run", root)
-	if result.err != nil {
-		t.Fatalf("rename dry-run failed: %v\n%s", result.err, result.combinedOutput())
-	}
-
-	combined := result.combinedOutput()
-	if !strings.Contains(combined, "ERROR") || !strings.Contains(combined, "symlink") {
-		t.Fatalf("expected symlink error in output\n%s", combined)
-	}
+	assertCommandFailed(t, result, "unsafe path", "rename", "symlink")
 
 	info, err := os.Lstat(linkPath)
 	if err != nil {
@@ -555,4 +548,136 @@ func TestEndToEndSymlinkEscapeBlocked(t *testing.T) {
 	if info.Mode()&os.ModeSymlink == 0 {
 		t.Fatalf("expected link to be a symlink")
 	}
+
+	outsideAfter, err := os.ReadFile(outsideFile)
+	if err != nil {
+		t.Fatalf("failed to read outside sentinel after rename: %v", err)
+	}
+	if !bytes.Equal(outsideBefore, outsideAfter) {
+		t.Fatalf("outside sentinel changed unexpectedly")
+	}
+}
+
+func TestEndToEndFlatten_SymlinkEscapeBlocked(t *testing.T) {
+	binPath := binaryPath(t)
+	root := t.TempDir()
+	outside := t.TempDir()
+	modTime := time.Date(2024, 3, 2, 12, 0, 0, 0, time.UTC)
+
+	writeFile(t, filepath.Join(root, "nested", "safe.txt"), "safe", modTime)
+
+	outsideFile := filepath.Join(outside, "outside.txt")
+	writeFile(t, outsideFile, "outside", modTime)
+	outsideBefore, err := os.ReadFile(outsideFile)
+	if err != nil {
+		t.Fatalf("failed to read outside sentinel before flatten: %v", err)
+	}
+
+	linkPath := filepath.Join(root, "nested", "escape_link.txt")
+	if err := os.Symlink(outsideFile, linkPath); err != nil {
+		t.Skipf("symlink not supported: %v", err)
+	}
+
+	result := runBinary(t, binPath, "flatten", root)
+	assertCommandFailed(t, result, "unsafe path", "flatten", "symlink")
+
+	assertExists(t, filepath.Join(root, "nested", "safe.txt"))
+	assertMissing(t, filepath.Join(root, "safe.txt"))
+	assertExists(t, linkPath)
+
+	outsideAfter, err := os.ReadFile(outsideFile)
+	if err != nil {
+		t.Fatalf("failed to read outside sentinel after flatten: %v", err)
+	}
+	if !bytes.Equal(outsideBefore, outsideAfter) {
+		t.Fatalf("outside sentinel changed unexpectedly")
+	}
+}
+
+func TestEndToEndDuplicate_SymlinkEscapeBlocked(t *testing.T) {
+	binPath := binaryPath(t)
+	root := t.TempDir()
+	outside := t.TempDir()
+	modTime := time.Date(2024, 3, 3, 12, 0, 0, 0, time.UTC)
+
+	writeFile(t, filepath.Join(root, "a.txt"), "same", modTime)
+	writeFile(t, filepath.Join(root, "b.txt"), "same", modTime)
+
+	outsideFile := filepath.Join(outside, "outside.txt")
+	writeFile(t, outsideFile, "outside", modTime)
+	outsideBefore, err := os.ReadFile(outsideFile)
+	if err != nil {
+		t.Fatalf("failed to read outside sentinel before duplicate: %v", err)
+	}
+
+	linkPath := filepath.Join(root, "escape_link.txt")
+	if err := os.Symlink(outsideFile, linkPath); err != nil {
+		t.Skipf("symlink not supported: %v", err)
+	}
+
+	result := runBinary(t, binPath, "duplicate", root)
+	assertCommandFailed(t, result, "unsafe path", "duplicate", "symlink")
+
+	assertExists(t, filepath.Join(root, "a.txt"))
+	assertExists(t, filepath.Join(root, "b.txt"))
+	assertExists(t, linkPath)
+
+	outsideAfter, err := os.ReadFile(outsideFile)
+	if err != nil {
+		t.Fatalf("failed to read outside sentinel after duplicate: %v", err)
+	}
+	if !bytes.Equal(outsideBefore, outsideAfter) {
+		t.Fatalf("outside sentinel changed unexpectedly")
+	}
+}
+
+func TestEndToEndManifest_SymlinkEscapeBlocked(t *testing.T) {
+	binPath := binaryPath(t)
+	root := t.TempDir()
+	outside := t.TempDir()
+	modTime := time.Date(2024, 3, 4, 12, 0, 0, 0, time.UTC)
+
+	writeFile(t, filepath.Join(root, "safe.txt"), "safe", modTime)
+
+	outsideFile := filepath.Join(outside, "outside.txt")
+	writeFile(t, outsideFile, "outside", modTime)
+	outsideBefore, err := os.ReadFile(outsideFile)
+	if err != nil {
+		t.Fatalf("failed to read outside sentinel before manifest: %v", err)
+	}
+
+	linkPath := filepath.Join(root, "escape_link.txt")
+	if err := os.Symlink(outsideFile, linkPath); err != nil {
+		t.Skipf("symlink not supported: %v", err)
+	}
+
+	manifestPath := filepath.Join(root, "manifest.json")
+	result := runBinary(t, binPath, "manifest", root, "-o", manifestPath)
+	assertCommandFailed(t, result, "unsafe", "symlink")
+
+	assertMissing(t, manifestPath)
+	assertExists(t, linkPath)
+
+	outsideAfter, err := os.ReadFile(outsideFile)
+	if err != nil {
+		t.Fatalf("failed to read outside sentinel after manifest: %v", err)
+	}
+	if !bytes.Equal(outsideBefore, outsideAfter) {
+		t.Fatalf("outside sentinel changed unexpectedly")
+	}
+}
+
+func TestEndToEndManifest_OutputOutsideTargetRejected(t *testing.T) {
+	binPath := binaryPath(t)
+	root := t.TempDir()
+	outside := t.TempDir()
+	modTime := time.Date(2024, 3, 5, 12, 0, 0, 0, time.UTC)
+
+	writeFile(t, filepath.Join(root, "safe.txt"), "safe", modTime)
+
+	outsideOutputPath := filepath.Join(outside, "manifest.json")
+	result := runBinary(t, binPath, "manifest", root, "-o", outsideOutputPath)
+	assertCommandFailed(t, result, "output path", "target directory")
+
+	assertMissing(t, outsideOutputPath)
 }

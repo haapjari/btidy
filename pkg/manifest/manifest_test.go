@@ -3,6 +3,7 @@ package manifest
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"os"
 	"path/filepath"
 	"testing"
@@ -12,6 +13,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"btidy/internal/testutil"
+	"btidy/pkg/safepath"
 )
 
 func expectedHash(content string) string {
@@ -179,6 +181,29 @@ func TestGenerator_Generate_WithProgress(t *testing.T) {
 		assert.LessOrEqual(t, p, numFiles)
 		assert.GreaterOrEqual(t, p, i+1)
 	}
+}
+
+func TestGenerator_Generate_UnsafeSymlinkRejected(t *testing.T) {
+	t.Parallel()
+
+	rootDir := t.TempDir()
+	outsideDir := t.TempDir()
+
+	testutil.CreateFile(t, filepath.Join(rootDir, "safe.txt"), "safe")
+	outsideFile := filepath.Join(outsideDir, "outside.txt")
+	testutil.CreateFile(t, outsideFile, "outside")
+
+	linkPath := filepath.Join(rootDir, "escape_link.txt")
+	if err := os.Symlink(outsideFile, linkPath); err != nil {
+		t.Skipf("symlink not supported: %v", err)
+	}
+
+	g, err := NewGenerator(rootDir, 0)
+	require.NoError(t, err)
+
+	_, err = g.Generate(GenerateOptions{})
+	require.Error(t, err)
+	assert.True(t, errors.Is(err, safepath.ErrSymlinkEscape))
 }
 
 func TestManifest_SaveLoad_RoundTrip(t *testing.T) {
