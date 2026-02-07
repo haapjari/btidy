@@ -6,6 +6,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"file-organizer/pkg/deduplicator"
+	"file-organizer/pkg/usecase"
 )
 
 func buildDuplicateCommand() *cobra.Command {
@@ -33,35 +34,30 @@ Use --dry-run first to review what would be deleted!`,
 }
 
 func runDuplicate(_ *cobra.Command, args []string) error {
-	absPath, err := validateAndResolvePath(args[0])
-	if err != nil {
-		return err
-	}
-
 	printDryRunBanner()
-	printCommandHeader("DUPLICATE", absPath)
+	printCollectingFiles()
 
-	files, progress, err := collectFilesForCommand(absPath, false)
+	progress := startProgress("Working")
+	execution, err := newUseCaseService().RunDuplicate(usecase.DuplicateRequest{
+		TargetDir: args[0],
+		DryRun:    dryRun,
+	})
+	progress.Stop()
 	if err != nil {
 		return err
 	}
 
-	if len(files) == 0 {
-		progress.Stop()
+	printCommandHeader("DUPLICATE", execution.RootDir)
+	printFoundFiles(execution.FileCount, execution.CollectDuration, false)
+
+	if execution.FileCount == 0 {
 		fmt.Println("No files to process.")
 		return nil
 	}
 
 	fmt.Println("Computing hashes and finding duplicates...")
 
-	d, err := deduplicator.New(absPath, dryRun)
-	if err != nil {
-		progress.Stop()
-		return fmt.Errorf("failed to create deduplicator: %w", err)
-	}
-
-	result := d.FindDuplicates(files)
-	progress.Stop()
+	result := execution.Result
 
 	if verbose || dryRun {
 		for _, op := range result.Operations {

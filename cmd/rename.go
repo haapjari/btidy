@@ -5,7 +5,7 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"file-organizer/pkg/renamer"
+	"file-organizer/pkg/usecase"
 )
 
 func buildRenameCommand() *cobra.Command {
@@ -31,33 +31,28 @@ After:  "2018-06-15_my_document.pdf"`,
 }
 
 func runRename(_ *cobra.Command, args []string) error {
-	absPath, err := validateAndResolvePath(args[0])
-	if err != nil {
-		return err
-	}
-
 	printDryRunBanner()
-	printCommandHeader("RENAME", absPath)
+	printCollectingFiles()
 
-	files, progress, err := collectFilesForCommand(absPath, true)
+	progress := startProgress("Working")
+	execution, err := newUseCaseService().RunRename(usecase.RenameRequest{
+		TargetDir: args[0],
+		DryRun:    dryRun,
+	})
+	progress.Stop()
 	if err != nil {
 		return err
 	}
 
-	if len(files) == 0 {
-		progress.Stop()
+	printCommandHeader("RENAME", execution.RootDir)
+	printFoundFiles(execution.FileCount, execution.CollectDuration, true)
+
+	if execution.FileCount == 0 {
 		fmt.Println("No files to process.")
 		return nil
 	}
 
-	r, err := renamer.New(absPath, dryRun)
-	if err != nil {
-		progress.Stop()
-		return fmt.Errorf("failed to create renamer: %w", err)
-	}
-
-	result := r.RenameFiles(files)
-	progress.Stop()
+	result := execution.Result
 
 	if verbose || dryRun {
 		for _, op := range result.Operations {

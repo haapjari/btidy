@@ -6,8 +6,9 @@ modifying the code.
 
 ## Quick orientation
 
-- Entry point and CLI wiring: `cmd/main.go`
+- Entry point and CLI wiring: `cmd/`
 - Core packages:
+  - `pkg/usecase`: application/service orchestration for command workflows
   - `pkg/collector`: walks directories, returns `FileInfo` metadata
   - `pkg/sanitizer`: normalizes filenames for rename phase
   - `pkg/safepath`: enforces root containment for all filesystem mutations
@@ -21,11 +22,12 @@ modifying the code.
 
 ```mermaid
 flowchart TB
-  CLI[cmd/main.go\nCobra commands] --> COLLECT[pkg/collector\nCollect FileInfo]
-  CLI --> RENAME[pkg/renamer]
-  CLI --> FLATTEN[pkg/flattener]
-  CLI --> DEDUPE[pkg/deduplicator]
-  CLI --> MANIFEST[pkg/manifest]
+  CLI[cmd/\nCobra commands] --> USECASE[pkg/usecase\nWorkflow services]
+  USECASE --> COLLECT[pkg/collector\nCollect FileInfo]
+  USECASE --> RENAME[pkg/renamer]
+  USECASE --> FLATTEN[pkg/flattener]
+  USECASE --> DEDUPE[pkg/deduplicator]
+  USECASE --> MANIFEST[pkg/manifest]
 
   RENAME --> SAN[pkg/sanitizer]
   RENAME --> SAFE[pkg/safepath]
@@ -58,18 +60,21 @@ Goal: rename files in place to a consistent, timestamped format.
 
 ```mermaid
 sequenceDiagram
-  participant CLI as cmd/main.go
+  participant CLI as cmd/
+  participant U as usecase
   participant C as collector
   participant R as renamer
   participant S as sanitizer
   participant P as safepath
 
-  CLI->>C: Collect(root)
-  C-->>CLI: []FileInfo
-  CLI->>R: RenameFiles(files)
+  CLI->>U: RunRename(target, dryRun)
+  U->>C: Collect(root)
+  C-->>U: []FileInfo
+  U->>R: RenameFiles(files)
   R->>S: GenerateTimestampedName(name, mtime)
   R->>P: ValidatePath(src,dst)
-  R-->>CLI: Result(ops)
+  R-->>U: Result(ops)
+  U-->>CLI: RenameExecution
 ```
 
 Key behavior:
@@ -84,19 +89,22 @@ Goal: move everything to the root directory and remove true duplicates.
 
 ```mermaid
 sequenceDiagram
-  participant CLI as cmd/main.go
+  participant CLI as cmd/
+  participant U as usecase
   participant C as collector
   participant F as flattener
   participant H as hasher
   participant P as safepath
 
-  CLI->>C: Collect(root)
-  C-->>CLI: []FileInfo
-  CLI->>F: FlattenFiles(files)
+  CLI->>U: RunFlatten(target, dryRun)
+  U->>C: Collect(root)
+  C-->>U: []FileInfo
+  U->>F: FlattenFiles(files)
   F->>H: HashFilesWithSizes(files)
   H-->>F: HashResult stream
   F->>P: ValidatePath + SafeRename/SafeRemove
-  F-->>CLI: Result(ops)
+  F-->>U: Result(ops)
+  U-->>CLI: FlattenExecution
 ```
 
 Key behavior:
@@ -112,18 +120,21 @@ Goal: remove duplicates using content hashing with a size-based pre-filter.
 
 ```mermaid
 sequenceDiagram
-  participant CLI as cmd/main.go
+  participant CLI as cmd/
+  participant U as usecase
   participant C as collector
   participant D as deduplicator
   participant H as hasher
   participant P as safepath
 
-  CLI->>C: Collect(root)
-  C-->>CLI: []FileInfo
-  CLI->>D: FindDuplicates(files)
+  CLI->>U: RunDuplicate(target, dryRun)
+  U->>C: Collect(root)
+  C-->>U: []FileInfo
+  U->>D: FindDuplicates(files)
   D->>H: ComputePartialHash/ComputeHash
   D->>P: SafeRemove
-  D-->>CLI: Result(ops)
+  D-->>U: Result(ops)
+  U-->>CLI: DuplicateExecution
 ```
 
 Key behavior:
@@ -139,16 +150,19 @@ Goal: create a JSON inventory of all files and content hashes.
 
 ```mermaid
 sequenceDiagram
-  participant CLI as cmd/main.go
+  participant CLI as cmd/
+  participant U as usecase
   participant M as manifest.Generator
   participant C as collector
   participant H as hasher
 
-  CLI->>M: Generate(root)
+  CLI->>U: RunManifest(target, workers, output)
+  U->>M: Generate(root)
   M->>C: Collect(root)
   M->>H: HashFilesWithSizes(files)
   H-->>M: HashResult stream
-  M-->>CLI: Manifest + Save()
+  M-->>U: Manifest
+  U-->>CLI: ManifestExecution + Save()
 ```
 
 Key behavior:
@@ -159,7 +173,7 @@ Key behavior:
 ## Safety and invariants
 
 - All filesystem mutations go through `pkg/safepath.Validator`.
-- The root path is resolved and validated at the start of each command.
+- The root path is resolved and validated in `pkg/usecase` before each workflow.
 - Dry-run mode avoids any mutating operation but still reports planned changes.
 
 ## Concurrency model
@@ -174,5 +188,4 @@ If you add a new phase or command:
 - Use `collector` for consistent file discovery.
 - Use `safepath.Validator` for all file mutations.
 - Prefer `hasher` when content identity matters.
-- Follow the existing pattern in `cmd/main.go` for summaries and dry-run output.
-
+- Follow the existing pattern in `cmd/` for summaries and dry-run output.

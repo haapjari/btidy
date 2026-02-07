@@ -3,63 +3,22 @@ package main
 import (
 	"fmt"
 	"os"
-	"path/filepath"
 	"sync"
 	"time"
 
-	"file-organizer/pkg/collector"
+	"file-organizer/pkg/usecase"
 )
 
 var defaultSkipFiles = []string{".DS_Store", "Thumbs.db", "organizer.log"}
-
-func validateAndResolvePath(targetDir string) (string, error) {
-	// Validate directory exists.
-	info, err := os.Stat(targetDir)
-	if err != nil {
-		return "", fmt.Errorf("cannot access directory: %w", err)
-	}
-	if !info.IsDir() {
-		return "", fmt.Errorf("%s is not a directory", targetDir)
-	}
-
-	// Convert to absolute path.
-	absPath, err := filepath.Abs(targetDir)
-	if err != nil {
-		return "", fmt.Errorf("cannot resolve path: %w", err)
-	}
-
-	return absPath, nil
-}
 
 func skipFiles() []string {
 	return append([]string(nil), defaultSkipFiles...)
 }
 
-func newFileCollector() *collector.Collector {
-	return collector.New(collector.Options{
+func newUseCaseService() *usecase.Service {
+	return usecase.New(usecase.Options{
 		SkipFiles: skipFiles(),
 	})
-}
-
-func collectFiles(rootDir string) ([]collector.FileInfo, error) {
-	return newFileCollector().Collect(rootDir)
-}
-
-func collectFilesForCommand(rootDir string, trailingBlankLine bool) ([]collector.FileInfo, *progressReporter, error) {
-	printCollectingFiles()
-
-	progress := startProgress("Working")
-	startTime := time.Now()
-
-	files, err := collectFiles(rootDir)
-	if err != nil {
-		progress.Stop()
-		return nil, nil, fmt.Errorf("failed to collect files: %w", err)
-	}
-
-	printFoundFiles(len(files), startTime, trailingBlankLine)
-
-	return files, progress, nil
 }
 
 func printDryRunBanner() {
@@ -80,8 +39,8 @@ func printCollectingFiles() {
 	fmt.Println("Collecting files...")
 }
 
-func printFoundFiles(fileCount int, startTime time.Time, trailingBlankLine bool) {
-	fmt.Printf("Found %d files in %v\n", fileCount, time.Since(startTime).Round(time.Millisecond))
+func printFoundFiles(fileCount int, elapsed time.Duration, trailingBlankLine bool) {
+	fmt.Printf("Found %d files in %v\n", fileCount, elapsed.Round(time.Millisecond))
 	if trailingBlankLine {
 		fmt.Println()
 	}

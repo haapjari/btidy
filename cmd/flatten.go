@@ -6,6 +6,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"file-organizer/pkg/flattener"
+	"file-organizer/pkg/usecase"
 )
 
 func buildFlattenCommand() *cobra.Command {
@@ -39,33 +40,28 @@ After:
 }
 
 func runFlatten(_ *cobra.Command, args []string) error {
-	absPath, err := validateAndResolvePath(args[0])
-	if err != nil {
-		return err
-	}
-
 	printDryRunBanner()
-	printCommandHeader("FLATTEN", absPath)
+	printCollectingFiles()
 
-	files, progress, err := collectFilesForCommand(absPath, true)
+	progress := startProgress("Working")
+	execution, err := newUseCaseService().RunFlatten(usecase.FlattenRequest{
+		TargetDir: args[0],
+		DryRun:    dryRun,
+	})
+	progress.Stop()
 	if err != nil {
 		return err
 	}
 
-	if len(files) == 0 {
-		progress.Stop()
+	printCommandHeader("FLATTEN", execution.RootDir)
+	printFoundFiles(execution.FileCount, execution.CollectDuration, true)
+
+	if execution.FileCount == 0 {
 		fmt.Println("No files to process.")
 		return nil
 	}
 
-	f, err := flattener.New(absPath, dryRun)
-	if err != nil {
-		progress.Stop()
-		return fmt.Errorf("failed to create flattener: %w", err)
-	}
-
-	result := f.FlattenFiles(files)
-	progress.Stop()
+	result := execution.Result
 
 	if verbose || dryRun {
 		for _, op := range result.Operations {

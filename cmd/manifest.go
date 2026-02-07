@@ -6,7 +6,7 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"file-organizer/pkg/manifest"
+	"file-organizer/pkg/usecase"
 )
 
 func buildManifestCommand() *cobra.Command {
@@ -43,28 +43,14 @@ Typical safe workflow:
 }
 
 func runManifest(args []string, outputPath string) error {
-	absPath, err := validateAndResolvePath(args[0])
-	if err != nil {
-		return err
-	}
-
-	printCommandHeader("MANIFEST", absPath)
-	fmt.Printf("Output file: %s\n", outputPath)
-	fmt.Printf("Workers: %d\n", workers)
+	progress := startProgress("Hashing")
 	fmt.Println("Collecting files and computing hashes...")
 
-	progress := startProgress("Hashing")
-	startTime := time.Now()
-
-	g, err := manifest.NewGenerator(absPath, workers)
-	if err != nil {
-		progress.Stop()
-		return fmt.Errorf("failed to create manifest generator: %w", err)
-	}
-
 	var lastProgress int
-	m, err := g.Generate(manifest.GenerateOptions{
-		SkipFiles: skipFiles(),
+	execution, err := newUseCaseService().RunManifest(usecase.ManifestRequest{
+		TargetDir:  args[0],
+		OutputPath: outputPath,
+		Workers:    workers,
 		OnProgress: func(processed, total int, _ string) {
 			if verbose && processed%100 == 0 && processed != lastProgress {
 				lastProgress = processed
@@ -72,23 +58,21 @@ func runManifest(args []string, outputPath string) error {
 			}
 		},
 	})
-	if err != nil {
-		progress.Stop()
-		return fmt.Errorf("failed to generate manifest: %w", err)
-	}
-
 	progress.Stop()
-
-	if err := m.Save(outputPath); err != nil {
-		return fmt.Errorf("failed to save manifest: %w", err)
+	if err != nil {
+		return err
 	}
 
-	fmt.Printf("\nCompleted in %v\n", time.Since(startTime).Round(time.Millisecond))
+	printCommandHeader("MANIFEST", execution.RootDir)
+	fmt.Printf("Output file: %s\n", outputPath)
+	fmt.Printf("Workers: %d\n", workers)
+
+	fmt.Printf("\nCompleted in %v\n", execution.Duration.Round(time.Millisecond))
 	fmt.Println()
 	printSummary(
-		fmt.Sprintf("Total files:    %d", m.FileCount()),
-		fmt.Sprintf("Unique files:   %d", m.UniqueFileCount()),
-		"Total size:     "+formatBytes(m.TotalSize()),
+		fmt.Sprintf("Total files:    %d", execution.Manifest.FileCount()),
+		fmt.Sprintf("Unique files:   %d", execution.Manifest.UniqueFileCount()),
+		"Total size:     "+formatBytes(execution.Manifest.TotalSize()),
 		"Manifest saved: "+outputPath,
 	)
 
