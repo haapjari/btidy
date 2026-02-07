@@ -32,10 +32,21 @@ make build
 ./btidy duplicate /path/to/backup/2018
 ```
 
+## Tests
+
+```bash
+# Unit tests
+make test
+
+# End-to-end CLI tests (builds and runs btidy)
+make test-e2e
+# or
+./scripts/e2e.sh
+```
+
 ## Naming Convention
 
 ```
 Before: My Document (Final).pdf
 After:  2018-06-15_my_document_final.pdf
 ```
-

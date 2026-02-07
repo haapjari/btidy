@@ -1,4 +1,4 @@
-.PHONY: all build test test-race test-cover clean lint fmt vet check pre-commit tools help
+.PHONY: all build test test-race test-cover test-e2e clean lint fmt vet check pre-commit tools help
 
 # Binary name
 BINARY := btidy
@@ -40,6 +40,7 @@ help:
 	@echo "  test         - Run tests with coverage"
 	@echo "  test-race    - Run tests with race detector and coverage"
 	@echo "  test-cover   - Full coverage report with HTML"
+	@echo "  test-e2e     - Run end-to-end CLI tests"
 	@echo "  lint         - Run golangci-lint (54 linters)"
 	@echo "  fmt          - Format code"
 	@echo "  vet          - Run go vet"
@@ -89,6 +90,11 @@ test-cover: $(GOTESTSUM)
 	@$(GO) tool cover -html=$(COVERAGE_FILE) -o $(COVERAGE_HTML)
 	@echo ""
 	@echo "HTML report: $(COVERAGE_HTML)"
+
+# End-to-end tests
+test-e2e:
+	@echo "Running end-to-end tests..."
+	$(GO) test ./e2e -v -count=1
 
 # Linting
 lint: $(GOLANGCI_LINT)
