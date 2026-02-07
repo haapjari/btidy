@@ -28,29 +28,36 @@ func expectedHash(content string) string {
 func TestNew(t *testing.T) {
 	t.Parallel()
 
-	t.Run("default workers", func(t *testing.T) {
-		t.Parallel()
-		h := New()
-		assert.Positive(t, h.Workers())
-	})
+	tests := []struct {
+		name        string
+		option      Option
+		wantWorkers int
+	}{
+		{name: "default workers"},
+		{name: "custom workers", option: WithWorkers(4), wantWorkers: 4},
+		{name: "zero workers uses default", option: WithWorkers(0)},
+		{name: "negative workers uses default", option: WithWorkers(-1)},
+	}
 
-	t.Run("custom workers", func(t *testing.T) {
-		t.Parallel()
-		h := New(WithWorkers(4))
-		assert.Equal(t, 4, h.Workers())
-	})
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 
-	t.Run("zero workers uses default", func(t *testing.T) {
-		t.Parallel()
-		h := New(WithWorkers(0))
-		assert.Positive(t, h.Workers())
-	})
+			var h *Hasher
+			if tc.option == nil {
+				h = New()
+			} else {
+				h = New(tc.option)
+			}
 
-	t.Run("negative workers uses default", func(t *testing.T) {
-		t.Parallel()
-		h := New(WithWorkers(-1))
-		assert.Positive(t, h.Workers())
-	})
+			if tc.wantWorkers > 0 {
+				assert.Equal(t, tc.wantWorkers, h.Workers())
+				return
+			}
+
+			assert.Positive(t, h.Workers())
+		})
+	}
 }
 
 func TestHasher_ComputeHash(t *testing.T) {
@@ -83,21 +90,26 @@ func TestHasher_ComputeHash(t *testing.T) {
 	}
 }
 
-func TestHasher_ComputeHash_NonExistentFile(t *testing.T) {
-	t.Parallel()
-	h := New()
-	_, err := h.ComputeHash("/nonexistent/path/file.txt")
-	assert.Error(t, err)
-}
-
-func TestHasher_ComputeHash_ReadError(t *testing.T) {
+func TestHasher_ComputeHash_ErrorScenarios(t *testing.T) {
 	t.Parallel()
 
 	tmpDir := t.TempDir()
-	h := New()
+	tests := []struct {
+		name string
+		path string
+	}{
+		{name: "non-existent file", path: "/nonexistent/path/file.txt"},
+		{name: "directory read error", path: tmpDir},
+	}
 
-	_, err := h.ComputeHash(tmpDir)
-	assert.Error(t, err)
+	h := New()
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			_, err := h.ComputeHash(tc.path)
+			assert.Error(t, err)
+		})
+	}
 }
 
 func TestHasher_ComputePartialHash(t *testing.T) {
