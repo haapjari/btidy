@@ -14,7 +14,7 @@ func buildFlattenCommand() *cobra.Command {
 		Use:   "flatten [path]",
 		Short: "Move all files to root directory, remove duplicates",
 		Long: `Moves all files to root directory:
-  - Removes true duplicates (same name + size + mtime)
+  - Removes true duplicates (same content hash)
   - Adds suffix for name conflicts
   - Deletes empty directories
 

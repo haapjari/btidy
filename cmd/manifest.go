@@ -18,7 +18,7 @@ func buildManifestCommand() *cobra.Command {
 		Long: `Creates a manifest (JSON file) containing SHA256 hashes of all files.
 
 The manifest can be used to:
-  - Verify no data was lost after operations (with verify command)
+  - Verify no data was lost after operations (compare manifests)
   - Track file inventory over time
   - Detect changes or corruption
 
@@ -30,7 +30,8 @@ Examples:
 Typical safe workflow:
   1. file-organizer manifest /backup -o before.json
   2. file-organizer flatten /backup
-  3. file-organizer verify --manifest before.json /backup`,
+  3. file-organizer manifest /backup -o after.json
+  4. compare hashes between manifests`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(_ *cobra.Command, args []string) error {
 			return runManifest(args, outputPath)

@@ -31,7 +31,7 @@ After:  2018-06-15_my_document_final.pdf
 
 ### Phase 2: Flatten
 
-Moves all files to root directory and removes duplicates (same name + size + modification time).
+Moves all files to root directory and removes duplicates by content hash (SHA256).
 
 ```
 Before:
@@ -88,7 +88,7 @@ This is the most reliable approach - files are only considered duplicates if the
 # 1. First rename files for consistent naming
 ./file-organizer rename /path/to/backup/2018
 
-# 2. Then flatten the directory structure  
+# 2. Then flatten the directory structure
 ./file-organizer flatten /path/to/backup/2018
 
 # 3. Finally remove any remaining duplicates
