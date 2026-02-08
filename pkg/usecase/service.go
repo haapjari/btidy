@@ -15,6 +15,7 @@ import (
 	"btidy/pkg/deduplicator"
 	"btidy/pkg/filelock"
 	"btidy/pkg/flattener"
+	"btidy/pkg/hasher"
 	"btidy/pkg/journal"
 	"btidy/pkg/manifest"
 	"btidy/pkg/metadata"
@@ -1036,6 +1037,29 @@ func undoEntry(target workflowTarget, entry journal.Entry, dryRun bool) UndoOper
 	}
 }
 
+// verifyHashBeforeUndo checks whether the file at path still matches the
+// expected hash. Returns a skip reason and true if the hash does not match,
+// indicating the undo step should be skipped. When expectedHash is empty
+// (e.g. rename/organize entries that don't record hashes), verification is
+// skipped and the function returns ("", false).
+func verifyHashBeforeUndo(path, expectedHash string) (reason string, changed bool) {
+	if expectedHash == "" {
+		return "", false
+	}
+
+	h := hasher.New()
+	currentHash, err := h.ComputeHash(path)
+	if err != nil {
+		return "cannot verify content: " + err.Error(), true
+	}
+
+	if currentHash != expectedHash {
+		return "content changed since original operation (hash mismatch)", true
+	}
+
+	return "", false
+}
+
 // undoTrash restores a trashed file back to its original location.
 func undoTrash(target workflowTarget, entry journal.Entry, dryRun bool) UndoOperation {
 	trashedAbs := filepath.Join(target.rootDir, entry.Dest)
@@ -1049,6 +1073,17 @@ func undoTrash(target workflowTarget, entry journal.Entry, dryRun bool) UndoOper
 			Dest:       entry.Dest,
 			Action:     "skip",
 			SkipReason: "trashed file not found: " + entry.Dest,
+		}
+	}
+
+	// Verify content integrity if hash is available.
+	if reason, changed := verifyHashBeforeUndo(trashedAbs, entry.Hash); changed {
+		return UndoOperation{
+			EntryType:  entry.Type,
+			Source:     entry.Source,
+			Dest:       entry.Dest,
+			Action:     "skip",
+			SkipReason: reason,
 		}
 	}
 
@@ -1104,6 +1139,17 @@ func undoRename(target workflowTarget, entry journal.Entry, dryRun bool) UndoOpe
 			Dest:       entry.Dest,
 			Action:     "skip",
 			SkipReason: "file not found at dest: " + entry.Dest,
+		}
+	}
+
+	// Verify content integrity if hash is available.
+	if reason, changed := verifyHashBeforeUndo(destAbs, entry.Hash); changed {
+		return UndoOperation{
+			EntryType:  entry.Type,
+			Source:     entry.Source,
+			Dest:       entry.Dest,
+			Action:     "skip",
+			SkipReason: reason,
 		}
 	}
 

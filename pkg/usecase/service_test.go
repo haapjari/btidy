@@ -1187,3 +1187,88 @@ func TestService_RunUndo_MarksJournalRolledBack(t *testing.T) {
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "no active journals")
 }
+
+func TestService_RunUndo_SkipsWhenHashChanged(t *testing.T) {
+	t.Parallel()
+
+	tmpDir := t.TempDir()
+	modTime := time.Date(2018, 6, 15, 12, 0, 0, 0, time.UTC)
+	testutil.CreateFileWithModTime(t, filepath.Join(tmpDir, "a.txt"), "same-content", modTime)
+	testutil.CreateFileWithModTime(t, filepath.Join(tmpDir, "b.txt"), "same-content", modTime)
+
+	s := New(Options{NoSnapshot: true})
+
+	// Run duplicate to trash one file.
+	dupExec, err := s.RunDuplicate(DuplicateRequest{
+		TargetDir: tmpDir,
+		DryRun:    false,
+		Workers:   2,
+	})
+	require.NoError(t, err)
+	assert.Equal(t, 1, dupExec.Result.DeletedCount)
+
+	// Find and modify the trashed file to simulate content change.
+	reader := journal.NewReader(dupExec.JournalPath)
+	entries, err := reader.Entries()
+	require.NoError(t, err)
+	require.Len(t, entries, 1)
+
+	trashedAbs := filepath.Join(tmpDir, entries[0].Dest)
+	require.NoError(t, os.WriteFile(trashedAbs, []byte("modified-content"), 0o644))
+
+	// Run undo — should skip the entry due to hash mismatch.
+	undoExec, err := s.RunUndo(UndoRequest{
+		TargetDir: tmpDir,
+		DryRun:    false,
+	})
+	require.NoError(t, err)
+
+	assert.Equal(t, 0, undoExec.RestoredCount, "should not restore when hash changed")
+	assert.Equal(t, 1, undoExec.SkippedCount, "should skip due to hash mismatch")
+	require.Len(t, undoExec.Operations, 1)
+	assert.Equal(t, "skip", undoExec.Operations[0].Action)
+	assert.Contains(t, undoExec.Operations[0].SkipReason, "hash mismatch")
+}
+
+func TestService_RunUndo_ProceedsWhenNoHash(t *testing.T) {
+	t.Parallel()
+
+	tmpDir := t.TempDir()
+	modTime := time.Date(2018, 6, 15, 12, 0, 0, 0, time.UTC)
+	testutil.CreateFileWithModTime(t, filepath.Join(tmpDir, "sub", "file.txt"), "content", modTime)
+
+	s := New(Options{NoSnapshot: true})
+
+	// Run flatten — rename entries don't have hashes.
+	flatExec, err := s.RunFlatten(FlattenRequest{
+		TargetDir: tmpDir,
+		DryRun:    false,
+		Workers:   2,
+	})
+	require.NoError(t, err)
+	assert.NotEmpty(t, flatExec.JournalPath)
+
+	// Verify journal entries have no hash.
+	reader := journal.NewReader(flatExec.JournalPath)
+	entries, err := reader.Entries()
+	require.NoError(t, err)
+	require.NotEmpty(t, entries)
+
+	hasRenameWithoutHash := false
+	for _, e := range entries {
+		if e.Type == "rename" && e.Hash == "" {
+			hasRenameWithoutHash = true
+		}
+	}
+	assert.True(t, hasRenameWithoutHash, "flatten should produce rename entries without hashes")
+
+	// Run undo — should proceed normally since no hash to verify.
+	undoExec, err := s.RunUndo(UndoRequest{
+		TargetDir: tmpDir,
+		DryRun:    false,
+	})
+	require.NoError(t, err)
+
+	assert.Positive(t, undoExec.ReversedCount, "should reverse-rename when no hash to verify")
+	assert.Equal(t, 0, undoExec.SkippedCount)
+}
