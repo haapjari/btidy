@@ -1302,6 +1302,55 @@ func TestService_RunUndo_ProceedsWhenNoHash(t *testing.T) {
 	assert.Equal(t, 0, undoExec.SkippedCount)
 }
 
+func TestService_RunUndo_RefusesOverwriteOnRestore(t *testing.T) {
+	t.Parallel()
+
+	tmpDir := t.TempDir()
+	modTime := time.Date(2018, 6, 15, 12, 0, 0, 0, time.UTC)
+	testutil.CreateFileWithModTime(t, filepath.Join(tmpDir, "a.txt"), "same-content", modTime)
+	testutil.CreateFileWithModTime(t, filepath.Join(tmpDir, "b.txt"), "same-content", modTime)
+
+	s := New(Options{NoSnapshot: true})
+
+	// Run duplicate to trash one file.
+	dupExec, err := s.RunDuplicate(DuplicateRequest{
+		TargetDir: tmpDir,
+		DryRun:    false,
+		Workers:   2,
+	})
+	require.NoError(t, err)
+	assert.Equal(t, 1, dupExec.Result.DeletedCount)
+
+	// Find which file was trashed.
+	var trashedName string
+	for _, name := range []string{"a.txt", "b.txt"} {
+		if _, statErr := os.Stat(filepath.Join(tmpDir, name)); os.IsNotExist(statErr) {
+			trashedName = name
+		}
+	}
+	require.NotEmpty(t, trashedName, "one file should have been trashed")
+
+	// Re-create a file at the trashed file's original path with different content.
+	newContent := "new important content that must not be lost"
+	testutil.CreateFile(t, filepath.Join(tmpDir, trashedName), newContent)
+
+	// Run undo — restore should fail for this file because target exists.
+	undoExec, err := s.RunUndo(UndoRequest{
+		TargetDir: tmpDir,
+		DryRun:    false,
+	})
+	require.NoError(t, err)
+
+	assert.Equal(t, 0, undoExec.RestoredCount, "should not restore when target exists")
+	assert.Positive(t, undoExec.ErrorCount, "should report error for conflicting restore")
+
+	// Verify the new file was NOT overwritten.
+	content, readErr := os.ReadFile(filepath.Join(tmpDir, trashedName))
+	require.NoError(t, readErr)
+	assert.Equal(t, newContent, string(content),
+		"existing file content must be preserved when undo restore is refused")
+}
+
 func TestService_WriteAheadJournal_IntentConfirmationPairs(t *testing.T) {
 	t.Parallel()
 

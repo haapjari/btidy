@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"btidy/pkg/metadata"
 	"btidy/pkg/safepath"
@@ -86,7 +87,7 @@ func (t *Trasher) Restore(trashedPath string) error {
 	}
 
 	rel, err := filepath.Rel(t.trashRoot, trashedPath)
-	if err != nil || rel == "." || rel == ".." || filepath.IsAbs(rel) || rel[:2] == ".." {
+	if err != nil || rel == "." || rel == ".." || filepath.IsAbs(rel) || strings.HasPrefix(rel, "..") {
 		return fmt.Errorf("%w: %s", ErrNotInTrash, trashedPath)
 	}
 
@@ -101,7 +102,7 @@ func (t *Trasher) Restore(trashedPath string) error {
 		return fmt.Errorf("create restore directory: %w", err)
 	}
 
-	return os.Rename(trashedPath, originalPath)
+	return t.validator.SafeRename(trashedPath, originalPath)
 }
 
 // RestoreAll restores all files from this run's trash back to their original locations.

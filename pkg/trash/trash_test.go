@@ -221,3 +221,68 @@ func TestTrash_RootLevelFile(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, "root content", string(content))
 }
+
+func TestRestore_RefusesOverwriteExistingFile(t *testing.T) {
+	t.Parallel()
+
+	root, metaDir, v := setup(t)
+
+	filePath := filepath.Join(root, "report.txt")
+	testutil.CreateFile(t, filePath, "original content")
+
+	trasher, err := New(metaDir, "overwrite-run", v)
+	require.NoError(t, err)
+
+	// Trash the file.
+	err = trasher.Trash(filePath)
+	require.NoError(t, err)
+
+	// Create a new file at the same path while the original is in trash.
+	testutil.CreateFile(t, filePath, "new content that must not be lost")
+
+	// Attempt to restore — should fail because target already exists.
+	trashedPath := filepath.Join(root, ".btidy", "trash", "overwrite-run", "report.txt")
+	err = trasher.Restore(trashedPath)
+	require.Error(t, err, "restore should refuse to overwrite an existing file")
+	require.ErrorIs(t, err, safepath.ErrTargetExists, "error should be ErrTargetExists")
+
+	// Verify the new file was NOT overwritten.
+	content, readErr := os.ReadFile(filePath)
+	require.NoError(t, readErr)
+	assert.Equal(t, "new content that must not be lost", string(content),
+		"existing file content must be preserved")
+
+	// Verify the trashed file still exists in trash.
+	_, statErr := os.Stat(trashedPath)
+	assert.NoError(t, statErr, "trashed file should still exist after failed restore")
+}
+
+func TestRestoreAll_SkipsExistingFiles(t *testing.T) {
+	t.Parallel()
+
+	root, metaDir, v := setup(t)
+
+	fileA := filepath.Join(root, "a.txt")
+	fileB := filepath.Join(root, "b.txt")
+	testutil.CreateFile(t, fileA, "alpha")
+	testutil.CreateFile(t, fileB, "beta")
+
+	trasher, err := New(metaDir, "restore-all-run", v)
+	require.NoError(t, err)
+
+	// Trash both files.
+	require.NoError(t, trasher.Trash(fileA))
+	require.NoError(t, trasher.Trash(fileB))
+
+	// Create a conflicting file at the path of fileA.
+	testutil.CreateFile(t, fileA, "new alpha that must survive")
+
+	// RestoreAll should fail because one file has a conflict.
+	err = trasher.RestoreAll()
+	require.Error(t, err, "RestoreAll should fail when restore destination exists")
+
+	// The conflicting file must not be overwritten.
+	content, readErr := os.ReadFile(fileA)
+	require.NoError(t, readErr)
+	assert.Equal(t, "new alpha that must survive", string(content))
+}

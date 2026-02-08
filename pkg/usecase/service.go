@@ -740,9 +740,10 @@ func isUnsafePathError(err error) bool {
 
 // writeJournal creates a journal file in .btidy/journal/ and writes entries to it.
 // Each operation is written as a two-phase entry: first an intent entry
-// (Success=false) followed by a confirmation entry (Success=true). This enables
-// crash detection via journal.Validate() — if the process terminates between
-// intent and confirmation, the unconfirmed entry signals a partial write.
+// (Success=false) followed by a confirmation entry (Success=true).
+// Note: entries are written after operations have completed, not before.
+// The journal serves undo support and audit logging. It does not provide
+// crash recovery for in-flight operations.
 func writeJournal(target workflowTarget, command string, entries []journal.Entry) (string, error) {
 	if len(entries) == 0 {
 		return "", nil
@@ -795,7 +796,7 @@ func relPath(rootDir, absPath string) string {
 }
 
 // filterConfirmedEntries returns only entries with Success=true, filtering out
-// intent entries from the write-ahead journal format.
+// intent entries from the two-phase journal format.
 func filterConfirmedEntries(entries []journal.Entry) []journal.Entry {
 	confirmed := make([]journal.Entry, 0, len(entries)/2)
 	for i := range entries {
@@ -937,12 +938,19 @@ type UndoRequest struct {
 	OnProgress ProgressCallback
 }
 
+// Undo action constants for UndoOperation.Action.
+const (
+	undoActionRestore       = "restore"
+	undoActionReverseRename = "reverse-rename"
+	undoActionSkip          = "skip"
+)
+
 // UndoOperation describes a single undo step.
 type UndoOperation struct {
 	EntryType  string // original journal entry type
 	Source     string // original source path (relative)
 	Dest       string // original dest path (relative)
-	Action     string // "restore", "reverse-rename", "skip"
+	Action     string // undoActionRestore, undoActionReverseRename, undoActionSkip
 	SkipReason string // why this entry was skipped
 	Error      error
 }
@@ -989,8 +997,8 @@ func (s *Service) RunUndo(req UndoRequest) (UndoExecution, error) {
 		return UndoExecution{}, fmt.Errorf("read journal: %w", readErr)
 	}
 
-	// Filter out intent entries (Success=false) — they exist for crash detection
-	// via write-ahead journaling, not for undo processing.
+	// Filter out intent entries (Success=false) — they exist as part of the
+	// two-phase journal format, not for undo processing.
 	confirmed := filterConfirmedEntries(entries)
 
 	runID := extractRunID(journalPath)
@@ -1009,11 +1017,11 @@ func (s *Service) RunUndo(req UndoRequest) (UndoExecution, error) {
 		switch {
 		case op.Error != nil:
 			exec.ErrorCount++
-		case op.Action == "skip":
+		case op.Action == undoActionSkip:
 			exec.SkippedCount++
-		case op.Action == "restore":
+		case op.Action == undoActionRestore:
 			exec.RestoredCount++
-		case op.Action == "reverse-rename":
+		case op.Action == undoActionReverseRename:
 			exec.ReversedCount++
 		}
 
@@ -1038,7 +1046,7 @@ func undoEntry(target workflowTarget, entry journal.Entry, dryRun bool) UndoOper
 			EntryType:  entry.Type,
 			Source:     entry.Source,
 			Dest:       entry.Dest,
-			Action:     "skip",
+			Action:     undoActionSkip,
 			SkipReason: "original operation was not successful",
 		}
 	}
@@ -1052,7 +1060,7 @@ func undoEntry(target workflowTarget, entry journal.Entry, dryRun bool) UndoOper
 		return UndoOperation{
 			EntryType:  entry.Type,
 			Source:     entry.Source,
-			Action:     "skip",
+			Action:     undoActionSkip,
 			SkipReason: "extract operations cannot be automatically undone",
 		}
 	default:
@@ -1060,7 +1068,7 @@ func undoEntry(target workflowTarget, entry journal.Entry, dryRun bool) UndoOper
 			EntryType:  entry.Type,
 			Source:     entry.Source,
 			Dest:       entry.Dest,
-			Action:     "skip",
+			Action:     undoActionSkip,
 			SkipReason: fmt.Sprintf("unknown entry type %q", entry.Type),
 		}
 	}
@@ -1089,70 +1097,63 @@ func verifyHashBeforeUndo(path, expectedHash string) (reason string, changed boo
 	return "", false
 }
 
+// undoMove is a shared helper for undoTrash and undoRename. It verifies the
+// file at fromAbs exists with correct content, then safely renames it to toAbs.
+// The action string (e.g. "restore", "reverse-rename") and notFoundMsg are
+// customized per caller.
+func undoMove(
+	target workflowTarget,
+	entry journal.Entry,
+	dryRun bool,
+	fromAbs, toAbs, action, notFoundMsg string,
+) UndoOperation {
+	base := UndoOperation{
+		EntryType: entry.Type,
+		Source:    entry.Source,
+		Dest:      entry.Dest,
+		Action:    action,
+	}
+
+	// Verify the source file still exists.
+	if _, statErr := os.Lstat(fromAbs); statErr != nil {
+		base.Action = undoActionSkip
+		base.SkipReason = notFoundMsg
+		return base
+	}
+
+	// Verify content integrity if hash is available.
+	if reason, changed := verifyHashBeforeUndo(fromAbs, entry.Hash); changed {
+		base.Action = undoActionSkip
+		base.SkipReason = reason
+		return base
+	}
+
+	if dryRun {
+		return base
+	}
+
+	// Create parent directory for the destination.
+	parentDir := filepath.Dir(toAbs)
+	if mkdirErr := target.validator.SafeMkdirAll(parentDir); mkdirErr != nil {
+		base.Error = fmt.Errorf("create parent directory: %w", mkdirErr)
+		return base
+	}
+
+	if renameErr := target.validator.SafeRename(fromAbs, toAbs); renameErr != nil {
+		base.Error = fmt.Errorf("%s: %w", action, renameErr)
+		return base
+	}
+
+	return base
+}
+
 // undoTrash restores a trashed file back to its original location.
 func undoTrash(target workflowTarget, entry journal.Entry, dryRun bool) UndoOperation {
 	trashedAbs := filepath.Join(target.rootDir, entry.Dest)
 	sourceAbs := filepath.Join(target.rootDir, entry.Source)
 
-	// Verify the trashed file still exists.
-	if _, statErr := os.Lstat(trashedAbs); statErr != nil {
-		return UndoOperation{
-			EntryType:  entry.Type,
-			Source:     entry.Source,
-			Dest:       entry.Dest,
-			Action:     "skip",
-			SkipReason: "trashed file not found: " + entry.Dest,
-		}
-	}
-
-	// Verify content integrity if hash is available.
-	if reason, changed := verifyHashBeforeUndo(trashedAbs, entry.Hash); changed {
-		return UndoOperation{
-			EntryType:  entry.Type,
-			Source:     entry.Source,
-			Dest:       entry.Dest,
-			Action:     "skip",
-			SkipReason: reason,
-		}
-	}
-
-	if dryRun {
-		return UndoOperation{
-			EntryType: entry.Type,
-			Source:    entry.Source,
-			Dest:      entry.Dest,
-			Action:    "restore",
-		}
-	}
-
-	// Create parent directory for the restored file.
-	parentDir := filepath.Dir(sourceAbs)
-	if mkdirErr := target.validator.SafeMkdirAll(parentDir); mkdirErr != nil {
-		return UndoOperation{
-			EntryType: entry.Type,
-			Source:    entry.Source,
-			Dest:      entry.Dest,
-			Action:    "restore",
-			Error:     fmt.Errorf("create parent directory: %w", mkdirErr),
-		}
-	}
-
-	if renameErr := os.Rename(trashedAbs, sourceAbs); renameErr != nil {
-		return UndoOperation{
-			EntryType: entry.Type,
-			Source:    entry.Source,
-			Dest:      entry.Dest,
-			Action:    "restore",
-			Error:     fmt.Errorf("restore from trash: %w", renameErr),
-		}
-	}
-
-	return UndoOperation{
-		EntryType: entry.Type,
-		Source:    entry.Source,
-		Dest:      entry.Dest,
-		Action:    "restore",
-	}
+	return undoMove(target, entry, dryRun, trashedAbs, sourceAbs, undoActionRestore,
+		"trashed file not found: "+entry.Dest)
 }
 
 // undoRename reverses a rename by moving the file from dest back to source.
@@ -1160,65 +1161,8 @@ func undoRename(target workflowTarget, entry journal.Entry, dryRun bool) UndoOpe
 	destAbs := filepath.Join(target.rootDir, entry.Dest)
 	sourceAbs := filepath.Join(target.rootDir, entry.Source)
 
-	// Verify the file exists at the dest location.
-	if _, statErr := os.Lstat(destAbs); statErr != nil {
-		return UndoOperation{
-			EntryType:  entry.Type,
-			Source:     entry.Source,
-			Dest:       entry.Dest,
-			Action:     "skip",
-			SkipReason: "file not found at dest: " + entry.Dest,
-		}
-	}
-
-	// Verify content integrity if hash is available.
-	if reason, changed := verifyHashBeforeUndo(destAbs, entry.Hash); changed {
-		return UndoOperation{
-			EntryType:  entry.Type,
-			Source:     entry.Source,
-			Dest:       entry.Dest,
-			Action:     "skip",
-			SkipReason: reason,
-		}
-	}
-
-	if dryRun {
-		return UndoOperation{
-			EntryType: entry.Type,
-			Source:    entry.Source,
-			Dest:      entry.Dest,
-			Action:    "reverse-rename",
-		}
-	}
-
-	// Create parent directory for the source path.
-	parentDir := filepath.Dir(sourceAbs)
-	if mkdirErr := target.validator.SafeMkdirAll(parentDir); mkdirErr != nil {
-		return UndoOperation{
-			EntryType: entry.Type,
-			Source:    entry.Source,
-			Dest:      entry.Dest,
-			Action:    "reverse-rename",
-			Error:     fmt.Errorf("create parent directory: %w", mkdirErr),
-		}
-	}
-
-	if renameErr := target.validator.SafeRename(destAbs, sourceAbs); renameErr != nil {
-		return UndoOperation{
-			EntryType: entry.Type,
-			Source:    entry.Source,
-			Dest:      entry.Dest,
-			Action:    "reverse-rename",
-			Error:     fmt.Errorf("reverse rename: %w", renameErr),
-		}
-	}
-
-	return UndoOperation{
-		EntryType: entry.Type,
-		Source:    entry.Source,
-		Dest:      entry.Dest,
-		Action:    "reverse-rename",
-	}
+	return undoMove(target, entry, dryRun, destAbs, sourceAbs, undoActionReverseRename,
+		"file not found at dest: "+entry.Dest)
 }
 
 // findJournal locates a journal file by run ID or finds the most recent one.

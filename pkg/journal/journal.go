@@ -1,6 +1,9 @@
-// Package journal provides append-only mutation logging for crash recovery
-// and rollback support. Each filesystem mutation is logged before execution;
-// the Success field is updated after completion.
+// Package journal provides append-only mutation logging for undo support
+// and operation auditing. Filesystem mutations are recorded after execution
+// completes, with intent and confirmation entries written as pairs.
+// The journal enables reversal of completed operations via the undo command.
+// Note: the journal does not provide crash recovery for in-flight operations;
+// pre-operation manifest snapshots serve that forensic role.
 package journal
 
 import (
