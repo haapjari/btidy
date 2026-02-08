@@ -689,3 +689,282 @@ func TestService_RunUnzip_WritesJournal(t *testing.T) {
 	assert.Equal(t, "docs.zip", trashEntry.Source)
 	assert.NotEmpty(t, trashEntry.Dest)
 }
+
+func TestService_RunUndo_ReversesDuplicate(t *testing.T) {
+	t.Parallel()
+
+	tmpDir := t.TempDir()
+	modTime := time.Date(2018, 6, 15, 12, 0, 0, 0, time.UTC)
+	testutil.CreateFileWithModTime(t, filepath.Join(tmpDir, "a.txt"), "same-content", modTime)
+	testutil.CreateFileWithModTime(t, filepath.Join(tmpDir, "b.txt"), "same-content", modTime)
+
+	s := New(Options{NoSnapshot: true})
+
+	// Run duplicate to trash one of the files.
+	dupExec, err := s.RunDuplicate(DuplicateRequest{
+		TargetDir: tmpDir,
+		DryRun:    false,
+		Workers:   2,
+	})
+	require.NoError(t, err)
+	assert.Equal(t, 1, dupExec.Result.DeletedCount)
+
+	// Verify one file was trashed (only one should remain).
+	remaining := 0
+	for _, name := range []string{"a.txt", "b.txt"} {
+		if _, statErr := os.Stat(filepath.Join(tmpDir, name)); statErr == nil {
+			remaining++
+		}
+	}
+	assert.Equal(t, 1, remaining, "only one file should remain after dedup")
+
+	// Run undo.
+	undoExec, err := s.RunUndo(UndoRequest{
+		TargetDir: tmpDir,
+		DryRun:    false,
+	})
+	require.NoError(t, err)
+
+	assert.Equal(t, 1, undoExec.RestoredCount, "should restore one trashed file")
+	assert.Equal(t, 0, undoExec.ErrorCount)
+	assert.Equal(t, 0, undoExec.SkippedCount)
+
+	// Both files should exist again.
+	_, err = os.Stat(filepath.Join(tmpDir, "a.txt"))
+	require.NoError(t, err, "a.txt should be restored")
+	_, err = os.Stat(filepath.Join(tmpDir, "b.txt"))
+	require.NoError(t, err, "b.txt should be restored")
+}
+
+func TestService_RunUndo_ReversesFlatten(t *testing.T) {
+	t.Parallel()
+
+	tmpDir := t.TempDir()
+	modTime := time.Date(2018, 6, 15, 12, 0, 0, 0, time.UTC)
+	testutil.CreateFileWithModTime(t, filepath.Join(tmpDir, "sub", "deep", "file.txt"), "content", modTime)
+
+	s := New(Options{NoSnapshot: true})
+
+	// Run flatten to move file to root.
+	flatExec, err := s.RunFlatten(FlattenRequest{
+		TargetDir: tmpDir,
+		DryRun:    false,
+		Workers:   2,
+	})
+	require.NoError(t, err)
+	assert.Equal(t, 1, flatExec.Result.MovedCount)
+
+	// Verify file is at root.
+	_, err = os.Stat(filepath.Join(tmpDir, "file.txt"))
+	require.NoError(t, err, "file should be at root after flatten")
+
+	// Run undo.
+	undoExec, err := s.RunUndo(UndoRequest{
+		TargetDir: tmpDir,
+		DryRun:    false,
+	})
+	require.NoError(t, err)
+
+	assert.Equal(t, 1, undoExec.ReversedCount, "should reverse one rename")
+	assert.Equal(t, 0, undoExec.ErrorCount)
+
+	// File should be back in original location.
+	_, err = os.Stat(filepath.Join(tmpDir, "sub", "deep", "file.txt"))
+	require.NoError(t, err, "file should be restored to original path")
+
+	// File should not be at root.
+	_, err = os.Stat(filepath.Join(tmpDir, "file.txt"))
+	assert.True(t, os.IsNotExist(err), "file should not remain at root")
+}
+
+func TestService_RunUndo_ReversesRename(t *testing.T) {
+	t.Parallel()
+
+	tmpDir := t.TempDir()
+	modTime := time.Date(2018, 6, 15, 12, 0, 0, 0, time.UTC)
+	testutil.CreateFileWithModTime(t, filepath.Join(tmpDir, "My Document.pdf"), "content", modTime)
+
+	s := New(Options{NoSnapshot: true})
+
+	// Run rename.
+	renameExec, err := s.RunRename(RenameRequest{
+		TargetDir: tmpDir,
+		DryRun:    false,
+	})
+	require.NoError(t, err)
+	assert.Equal(t, 1, renameExec.Result.RenamedCount)
+
+	// Verify renamed file exists.
+	_, err = os.Stat(filepath.Join(tmpDir, "2018-06-15_my_document.pdf"))
+	require.NoError(t, err)
+
+	// Run undo.
+	undoExec, err := s.RunUndo(UndoRequest{
+		TargetDir: tmpDir,
+		DryRun:    false,
+	})
+	require.NoError(t, err)
+
+	assert.Equal(t, 1, undoExec.ReversedCount, "should reverse one rename")
+	assert.Equal(t, 0, undoExec.ErrorCount)
+
+	// Original name should be restored.
+	_, err = os.Stat(filepath.Join(tmpDir, "My Document.pdf"))
+	require.NoError(t, err, "original filename should be restored")
+
+	// Renamed file should not exist.
+	_, err = os.Stat(filepath.Join(tmpDir, "2018-06-15_my_document.pdf"))
+	assert.True(t, os.IsNotExist(err), "renamed file should not exist after undo")
+}
+
+func TestService_RunUndo_DryRunNoChanges(t *testing.T) {
+	t.Parallel()
+
+	tmpDir := t.TempDir()
+	modTime := time.Date(2018, 6, 15, 12, 0, 0, 0, time.UTC)
+	testutil.CreateFileWithModTime(t, filepath.Join(tmpDir, "a.txt"), "same-content", modTime)
+	testutil.CreateFileWithModTime(t, filepath.Join(tmpDir, "b.txt"), "same-content", modTime)
+
+	s := New(Options{NoSnapshot: true})
+
+	// Run duplicate to trash one file.
+	_, err := s.RunDuplicate(DuplicateRequest{
+		TargetDir: tmpDir,
+		DryRun:    false,
+		Workers:   2,
+	})
+	require.NoError(t, err)
+
+	// Count files before undo dry-run.
+	filesBefore, readErr := os.ReadDir(tmpDir)
+	require.NoError(t, readErr)
+
+	// Run undo in dry-run mode.
+	undoExec, err := s.RunUndo(UndoRequest{
+		TargetDir: tmpDir,
+		DryRun:    true,
+	})
+	require.NoError(t, err)
+
+	assert.True(t, undoExec.DryRun)
+	assert.Equal(t, 1, undoExec.RestoredCount, "dry-run should report what would be restored")
+	assert.Equal(t, 0, undoExec.ErrorCount)
+
+	// Verify no actual changes were made.
+	filesAfter, readErr := os.ReadDir(tmpDir)
+	require.NoError(t, readErr)
+	assert.Len(t, filesAfter, len(filesBefore), "dry-run should not change file count")
+
+	// Verify journal was NOT renamed (still active).
+	journalDir := filepath.Join(tmpDir, ".btidy", "journal")
+	journalEntries, readErr := os.ReadDir(journalDir)
+	require.NoError(t, readErr)
+
+	activeCount := 0
+	for _, e := range journalEntries {
+		if filepath.Ext(e.Name()) == ".jsonl" {
+			activeCount++
+		}
+	}
+	assert.Equal(t, 1, activeCount, "journal should still be active after dry-run")
+}
+
+func TestService_RunUndo_SpecificRunID(t *testing.T) {
+	t.Parallel()
+
+	tmpDir := t.TempDir()
+	modTime := time.Date(2018, 6, 15, 12, 0, 0, 0, time.UTC)
+	testutil.CreateFileWithModTime(t, filepath.Join(tmpDir, "My Document.pdf"), "content", modTime)
+
+	s := New(Options{NoSnapshot: true})
+
+	// Run rename.
+	renameExec, err := s.RunRename(RenameRequest{
+		TargetDir: tmpDir,
+		DryRun:    false,
+	})
+	require.NoError(t, err)
+	require.NotEmpty(t, renameExec.JournalPath)
+
+	// Extract run ID from journal path.
+	runID := extractRunID(renameExec.JournalPath)
+
+	// Run undo with specific run ID.
+	undoExec, err := s.RunUndo(UndoRequest{
+		TargetDir: tmpDir,
+		RunID:     runID,
+		DryRun:    false,
+	})
+	require.NoError(t, err)
+
+	assert.Equal(t, runID, undoExec.RunID)
+	assert.Equal(t, 1, undoExec.ReversedCount)
+	assert.Equal(t, 0, undoExec.ErrorCount)
+
+	// Original name should be restored.
+	_, err = os.Stat(filepath.Join(tmpDir, "My Document.pdf"))
+	require.NoError(t, err)
+}
+
+func TestService_RunUndo_NoJournalError(t *testing.T) {
+	t.Parallel()
+
+	tmpDir := t.TempDir()
+	testutil.CreateFileWithModTime(t, filepath.Join(tmpDir, "file.txt"), "content",
+		time.Date(2018, 6, 15, 12, 0, 0, 0, time.UTC))
+
+	s := New(Options{NoSnapshot: true})
+
+	_, err := s.RunUndo(UndoRequest{
+		TargetDir: tmpDir,
+		DryRun:    false,
+	})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "no journals found")
+}
+
+func TestService_RunUndo_MarksJournalRolledBack(t *testing.T) {
+	t.Parallel()
+
+	tmpDir := t.TempDir()
+	modTime := time.Date(2018, 6, 15, 12, 0, 0, 0, time.UTC)
+	testutil.CreateFileWithModTime(t, filepath.Join(tmpDir, "My Document.pdf"), "content", modTime)
+
+	s := New(Options{NoSnapshot: true})
+
+	// Run rename to create a journal.
+	renameExec, err := s.RunRename(RenameRequest{
+		TargetDir: tmpDir,
+		DryRun:    false,
+	})
+	require.NoError(t, err)
+	require.NotEmpty(t, renameExec.JournalPath)
+
+	// Verify journal exists before undo.
+	_, err = os.Stat(renameExec.JournalPath)
+	require.NoError(t, err)
+
+	// Run undo.
+	_, err = s.RunUndo(UndoRequest{
+		TargetDir: tmpDir,
+		DryRun:    false,
+	})
+	require.NoError(t, err)
+
+	// Original journal should no longer exist.
+	_, err = os.Stat(renameExec.JournalPath)
+	assert.True(t, os.IsNotExist(err), "original journal should be renamed")
+
+	// Rolled-back journal should exist.
+	rolledBackPath := renameExec.JournalPath[:len(renameExec.JournalPath)-len(".jsonl")] + ".rolled-back.jsonl"
+	_, err = os.Stat(rolledBackPath)
+	require.NoError(t, err, "rolled-back journal should exist")
+
+	// Running undo again should fail (no active journals).
+	_, err = s.RunUndo(UndoRequest{
+		TargetDir: tmpDir,
+		DryRun:    false,
+	})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "no active journals")
+}

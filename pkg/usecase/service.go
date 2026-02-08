@@ -7,6 +7,8 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"sort"
+	"strings"
 	"time"
 
 	"btidy/pkg/collector"
@@ -899,4 +901,294 @@ func organizeJournalEntries(result organizer.Result, rootDir string) []journal.E
 		}
 	}
 	return entries
+}
+
+// UndoRequest contains inputs for the undo workflow.
+type UndoRequest struct {
+	TargetDir  string
+	RunID      string // empty = most recent journal
+	DryRun     bool
+	OnProgress ProgressCallback
+}
+
+// UndoOperation describes a single undo step.
+type UndoOperation struct {
+	EntryType  string // original journal entry type
+	Source     string // original source path (relative)
+	Dest       string // original dest path (relative)
+	Action     string // "restore", "reverse-rename", "skip"
+	SkipReason string // why this entry was skipped
+	Error      error
+}
+
+// UndoExecution contains undo workflow outputs.
+type UndoExecution struct {
+	RootDir       string
+	JournalPath   string
+	RunID         string
+	Operations    []UndoOperation
+	RestoredCount int
+	ReversedCount int
+	SkippedCount  int
+	ErrorCount    int
+	DryRun        bool
+}
+
+// RunUndo reverses the most recent (or specified) operation using its journal.
+func (s *Service) RunUndo(req UndoRequest) (UndoExecution, error) {
+	target, err := resolveWorkflowTarget(req.TargetDir)
+	if err != nil {
+		return UndoExecution{}, err
+	}
+
+	lock, lockErr := acquireWorkflowLock(target)
+	if lockErr != nil {
+		return UndoExecution{}, lockErr
+	}
+	defer lock.Close()
+
+	metaDir, initErr := metadata.Init(target.rootDir, target.validator)
+	if initErr != nil {
+		return UndoExecution{}, fmt.Errorf("initialize metadata: %w", initErr)
+	}
+
+	journalPath, findErr := findJournal(metaDir, req.RunID)
+	if findErr != nil {
+		return UndoExecution{}, findErr
+	}
+
+	reader := journal.NewReader(journalPath)
+	entries, readErr := reader.EntriesReverse()
+	if readErr != nil {
+		return UndoExecution{}, fmt.Errorf("read journal: %w", readErr)
+	}
+
+	runID := extractRunID(journalPath)
+
+	exec := UndoExecution{
+		RootDir:     target.rootDir,
+		JournalPath: journalPath,
+		RunID:       runID,
+		DryRun:      req.DryRun,
+	}
+
+	for i, entry := range entries {
+		op := undoEntry(target, entry, req.DryRun)
+		exec.Operations = append(exec.Operations, op)
+
+		switch {
+		case op.Error != nil:
+			exec.ErrorCount++
+		case op.Action == "skip":
+			exec.SkippedCount++
+		case op.Action == "restore":
+			exec.RestoredCount++
+		case op.Action == "reverse-rename":
+			exec.ReversedCount++
+		}
+
+		progress.EmitStage(req.OnProgress, "undoing", i+1, len(entries))
+	}
+
+	// Mark journal as rolled back by renaming to .rolled-back.jsonl.
+	if !req.DryRun && len(entries) > 0 {
+		rolledBackPath := strings.TrimSuffix(journalPath, ".jsonl") + ".rolled-back.jsonl"
+		if renameErr := os.Rename(journalPath, rolledBackPath); renameErr != nil {
+			return exec, fmt.Errorf("mark journal as rolled back: %w", renameErr)
+		}
+	}
+
+	return exec, nil
+}
+
+// undoEntry reverses a single journal entry.
+func undoEntry(target workflowTarget, entry journal.Entry, dryRun bool) UndoOperation {
+	if !entry.Success {
+		return UndoOperation{
+			EntryType:  entry.Type,
+			Source:     entry.Source,
+			Dest:       entry.Dest,
+			Action:     "skip",
+			SkipReason: "original operation was not successful",
+		}
+	}
+
+	switch entry.Type {
+	case "trash":
+		return undoTrash(target, entry, dryRun)
+	case "rename":
+		return undoRename(target, entry, dryRun)
+	case "extract":
+		return UndoOperation{
+			EntryType:  entry.Type,
+			Source:     entry.Source,
+			Action:     "skip",
+			SkipReason: "extract operations cannot be automatically undone",
+		}
+	default:
+		return UndoOperation{
+			EntryType:  entry.Type,
+			Source:     entry.Source,
+			Dest:       entry.Dest,
+			Action:     "skip",
+			SkipReason: fmt.Sprintf("unknown entry type %q", entry.Type),
+		}
+	}
+}
+
+// undoTrash restores a trashed file back to its original location.
+func undoTrash(target workflowTarget, entry journal.Entry, dryRun bool) UndoOperation {
+	trashedAbs := filepath.Join(target.rootDir, entry.Dest)
+	sourceAbs := filepath.Join(target.rootDir, entry.Source)
+
+	// Verify the trashed file still exists.
+	if _, statErr := os.Lstat(trashedAbs); statErr != nil {
+		return UndoOperation{
+			EntryType:  entry.Type,
+			Source:     entry.Source,
+			Dest:       entry.Dest,
+			Action:     "skip",
+			SkipReason: "trashed file not found: " + entry.Dest,
+		}
+	}
+
+	if dryRun {
+		return UndoOperation{
+			EntryType: entry.Type,
+			Source:    entry.Source,
+			Dest:      entry.Dest,
+			Action:    "restore",
+		}
+	}
+
+	// Create parent directory for the restored file.
+	parentDir := filepath.Dir(sourceAbs)
+	if mkdirErr := target.validator.SafeMkdirAll(parentDir); mkdirErr != nil {
+		return UndoOperation{
+			EntryType: entry.Type,
+			Source:    entry.Source,
+			Dest:      entry.Dest,
+			Action:    "restore",
+			Error:     fmt.Errorf("create parent directory: %w", mkdirErr),
+		}
+	}
+
+	if renameErr := os.Rename(trashedAbs, sourceAbs); renameErr != nil {
+		return UndoOperation{
+			EntryType: entry.Type,
+			Source:    entry.Source,
+			Dest:      entry.Dest,
+			Action:    "restore",
+			Error:     fmt.Errorf("restore from trash: %w", renameErr),
+		}
+	}
+
+	return UndoOperation{
+		EntryType: entry.Type,
+		Source:    entry.Source,
+		Dest:      entry.Dest,
+		Action:    "restore",
+	}
+}
+
+// undoRename reverses a rename by moving the file from dest back to source.
+func undoRename(target workflowTarget, entry journal.Entry, dryRun bool) UndoOperation {
+	destAbs := filepath.Join(target.rootDir, entry.Dest)
+	sourceAbs := filepath.Join(target.rootDir, entry.Source)
+
+	// Verify the file exists at the dest location.
+	if _, statErr := os.Lstat(destAbs); statErr != nil {
+		return UndoOperation{
+			EntryType:  entry.Type,
+			Source:     entry.Source,
+			Dest:       entry.Dest,
+			Action:     "skip",
+			SkipReason: "file not found at dest: " + entry.Dest,
+		}
+	}
+
+	if dryRun {
+		return UndoOperation{
+			EntryType: entry.Type,
+			Source:    entry.Source,
+			Dest:      entry.Dest,
+			Action:    "reverse-rename",
+		}
+	}
+
+	// Create parent directory for the source path.
+	parentDir := filepath.Dir(sourceAbs)
+	if mkdirErr := target.validator.SafeMkdirAll(parentDir); mkdirErr != nil {
+		return UndoOperation{
+			EntryType: entry.Type,
+			Source:    entry.Source,
+			Dest:      entry.Dest,
+			Action:    "reverse-rename",
+			Error:     fmt.Errorf("create parent directory: %w", mkdirErr),
+		}
+	}
+
+	if renameErr := target.validator.SafeRename(destAbs, sourceAbs); renameErr != nil {
+		return UndoOperation{
+			EntryType: entry.Type,
+			Source:    entry.Source,
+			Dest:      entry.Dest,
+			Action:    "reverse-rename",
+			Error:     fmt.Errorf("reverse rename: %w", renameErr),
+		}
+	}
+
+	return UndoOperation{
+		EntryType: entry.Type,
+		Source:    entry.Source,
+		Dest:      entry.Dest,
+		Action:    "reverse-rename",
+	}
+}
+
+// findJournal locates a journal file by run ID or finds the most recent one.
+func findJournal(metaDir *metadata.Dir, runID string) (string, error) {
+	if runID != "" {
+		journalPath := metaDir.JournalPath(runID)
+		if _, statErr := os.Stat(journalPath); statErr != nil {
+			return "", fmt.Errorf("journal not found for run %q: %w", runID, statErr)
+		}
+		return journalPath, nil
+	}
+
+	return findLatestJournal(metaDir)
+}
+
+// findLatestJournal finds the most recent active journal file.
+func findLatestJournal(metaDir *metadata.Dir) (string, error) {
+	journalDir := filepath.Join(metaDir.Root(), "journal")
+
+	dirEntries, readErr := os.ReadDir(journalDir)
+	if readErr != nil {
+		return "", fmt.Errorf("no journals found: %w", readErr)
+	}
+
+	var activeJournals []string
+	for _, entry := range dirEntries {
+		name := entry.Name()
+		if strings.HasSuffix(name, ".jsonl") && !strings.HasSuffix(name, ".rolled-back.jsonl") {
+			activeJournals = append(activeJournals, name)
+		}
+	}
+
+	if len(activeJournals) == 0 {
+		return "", fmt.Errorf("no active journals found in %s", journalDir)
+	}
+
+	sort.Strings(activeJournals)
+	latestName := activeJournals[len(activeJournals)-1]
+
+	return filepath.Join(journalDir, latestName), nil
+}
+
+// extractRunID extracts the run ID from a journal file path.
+// For example, ".btidy/journal/duplicate-20260208T143022.jsonl" returns "duplicate-20260208T143022".
+func extractRunID(journalPath string) string {
+	base := filepath.Base(journalPath)
+	return strings.TrimSuffix(base, ".jsonl")
 }
