@@ -225,6 +225,27 @@ func (u *Unzipper) trashOrRemove(path string) (string, error) {
 	return "", nil
 }
 
+// backupExistingFile checks whether a file already exists at the given path and,
+// if so, backs it up to trash before extraction overwrites it. Without a trasher
+// the extraction is refused to prevent silent data loss.
+func (u *Unzipper) backupExistingFile(entryPath string) error {
+	if _, err := os.Lstat(entryPath); err != nil {
+		if os.IsNotExist(err) {
+			return nil // nothing to protect
+		}
+		return fmt.Errorf("cannot inspect existing file %q: %w", entryPath, err)
+	}
+
+	if u.trasher != nil {
+		if _, err := u.trasher.TrashWithDest(entryPath); err != nil {
+			return fmt.Errorf("cannot back up existing file %q before overwrite: %w", entryPath, err)
+		}
+		return nil
+	}
+
+	return fmt.Errorf("refusing to overwrite existing file: %s", entryPath)
+}
+
 func (u *Unzipper) verifyExtractedFiles(entries []*zip.File, destinationDir string) error {
 	for _, file := range entries {
 		if isDirectoryEntry(file) || file.Mode()&os.ModeSymlink != 0 {
@@ -296,6 +317,11 @@ func (u *Unzipper) extractEntry(archivePath, destinationDir string, file *zip.Fi
 
 	if u.dryRun {
 		return result, nil
+	}
+
+	// Protect existing files from being silently overwritten during extraction.
+	if err := u.backupExistingFile(entryPath); err != nil {
+		return result, err
 	}
 
 	if err := extractRegularFile(file, entryPath); err != nil {

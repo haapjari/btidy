@@ -381,3 +381,111 @@ func TestUnzipper_ExtractArchives_ReportsProgress(t *testing.T) {
 	assert.Equal(t, lastProcessed, lastTotal)
 	assert.Equal(t, 1, lastTotal)
 }
+
+// Test that extracting over an existing file backs it up to trash when a trasher is provided.
+func TestUnzipper_ExtractArchives_BacksUpExistingFileToTrash(t *testing.T) {
+	t.Parallel()
+
+	tmpDir := t.TempDir()
+
+	// Pre-create a file that will be in the extraction path.
+	existingPath := filepath.Join(tmpDir, "photo.jpg")
+	originalContent := []byte("original precious data")
+	require.NoError(t, os.WriteFile(existingPath, originalContent, 0o600))
+
+	// Create an archive that extracts a file with the same name.
+	archivePath := filepath.Join(tmpDir, "photos.zip")
+	newContent := []byte("new photo data from archive")
+	writeZipArchive(t, archivePath, []zipFixtureEntry{
+		{name: "photo.jpg", content: newContent},
+	})
+
+	v, err := safepath.New(tmpDir)
+	require.NoError(t, err)
+
+	metaDir, err := metadata.Init(tmpDir, v)
+	require.NoError(t, err)
+
+	runID := metaDir.RunID("unzip")
+	trasher, err := trash.New(metaDir, runID, v)
+	require.NoError(t, err)
+
+	u, err := NewWithValidator(v, false, trasher)
+	require.NoError(t, err)
+
+	archiveFiles := []collector.FileInfo{
+		{Path: archivePath, Dir: tmpDir, Name: "photos.zip"},
+	}
+	result := u.ExtractArchives(archiveFiles)
+
+	assert.Equal(t, 1, result.ExtractedArchives)
+	assert.Equal(t, 0, result.ErrorCount)
+
+	// The extracted file should contain the new content.
+	got, err := os.ReadFile(existingPath)
+	require.NoError(t, err)
+	assert.Equal(t, newContent, got, "file should contain new archive content")
+
+	// The original file should be preserved in trash.
+	trashDir := filepath.Join(tmpDir, ".btidy", "trash")
+	entries, err := os.ReadDir(trashDir)
+	require.NoError(t, err)
+	require.NotEmpty(t, entries, "trash directory should have a run subdirectory")
+
+	// Find the backed-up file in the trash.
+	backedUp := filepath.Join(trashDir, entries[0].Name(), "photo.jpg")
+	assert.FileExists(t, backedUp, "original file should be in trash")
+
+	backedUpContent, err := os.ReadFile(backedUp)
+	require.NoError(t, err)
+	assert.Equal(t, originalContent, backedUpContent, "trash should contain the original data")
+}
+
+// Test that extracting over an existing file is refused when no trasher is configured.
+func TestUnzipper_ExtractArchives_RefusesOverwriteWithoutTrasher(t *testing.T) {
+	t.Parallel()
+
+	tmpDir := t.TempDir()
+
+	// Pre-create a file that will be in the extraction path.
+	existingPath := filepath.Join(tmpDir, "readme.txt")
+	originalContent := []byte("important existing data")
+	require.NoError(t, os.WriteFile(existingPath, originalContent, 0o600))
+
+	// Create an archive that extracts a file with the same name.
+	archivePath := filepath.Join(tmpDir, "docs.zip")
+	writeZipArchive(t, archivePath, []zipFixtureEntry{
+		{name: "readme.txt", content: []byte("overwrite attempt")},
+	})
+
+	// No trasher — should refuse to overwrite.
+	u, err := New(tmpDir, false)
+	require.NoError(t, err)
+
+	files := collectFiles(t, tmpDir)
+	// Filter to just the archive.
+	var archiveFiles []collector.FileInfo
+	for _, f := range files {
+		if filepath.Ext(f.Name) == ".zip" {
+			archiveFiles = append(archiveFiles, f)
+		}
+	}
+	require.Len(t, archiveFiles, 1)
+
+	result := u.ExtractArchives(archiveFiles)
+
+	assert.Equal(t, 1, result.ErrorCount, "should have an error for refused overwrite")
+	assert.Equal(t, 0, result.ExtractedArchives, "archive should not be marked as extracted")
+
+	require.Len(t, result.Operations, 1)
+	require.Error(t, result.Operations[0].Error)
+	assert.Contains(t, result.Operations[0].Error.Error(), "refusing to overwrite existing file")
+
+	// The original file must be preserved with its original content.
+	got, err := os.ReadFile(existingPath)
+	require.NoError(t, err)
+	assert.Equal(t, originalContent, got, "original file must not be modified")
+
+	// The archive must still exist (extraction failed, so archive not deleted).
+	assert.FileExists(t, archivePath, "archive must remain when extraction fails")
+}
