@@ -105,6 +105,23 @@ func TestCollector_Collect_SkipDirs(t *testing.T) {
 	}
 }
 
+func TestCollector_Collect_SkipBtidyDir(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	// Create files inside .btidy directory (metadata dir)
+	testutil.CreateFile(t, filepath.Join(tmpDir, ".btidy", "lock"), "lock")
+	testutil.CreateFile(t, filepath.Join(tmpDir, ".btidy", "trash", "run1", "file.txt"), "trashed")
+	testutil.CreateFile(t, filepath.Join(tmpDir, "normal.txt"), "normal")
+
+	c := New(Options{
+		SkipDirs: []string{".btidy"},
+	})
+
+	files := collectFiles(t, c, tmpDir)
+	assert.Len(t, files, 1, "expected only 1 file (everything in .btidy skipped)")
+	assert.Equal(t, "normal.txt", files[0].Name, "only normal.txt should be collected")
+}
+
 func TestCollector_CollectFromDir(t *testing.T) {
 	tmpDir := setupTestDir(t)
 

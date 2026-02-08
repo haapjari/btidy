@@ -11,14 +11,20 @@ import (
 )
 
 var defaultSkipFiles = []string{".DS_Store", "Thumbs.db", "organizer.log"}
+var defaultSkipDirs = []string{".btidy"}
 
 func skipFiles() []string {
 	return append([]string(nil), defaultSkipFiles...)
 }
 
+func skipDirs() []string {
+	return append([]string(nil), defaultSkipDirs...)
+}
+
 func newUseCaseService() *usecase.Service {
 	return usecase.New(usecase.Options{
 		SkipFiles: skipFiles(),
+		SkipDirs:  skipDirs(),
 	})
 }
 

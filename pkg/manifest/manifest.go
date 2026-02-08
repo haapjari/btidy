@@ -39,6 +39,7 @@ type ProgressCallback func(processed, total int, currentFile string)
 // GenerateOptions configures manifest generation.
 type GenerateOptions struct {
 	SkipFiles  []string
+	SkipDirs   []string
 	Workers    int
 	OnProgress ProgressCallback
 }
@@ -84,6 +85,7 @@ func (g *Generator) Generate(opts GenerateOptions) (*Manifest, error) {
 	// Collect all files
 	c := collector.New(collector.Options{
 		SkipFiles: opts.SkipFiles,
+		SkipDirs:  opts.SkipDirs,
 	})
 
 	files, err := c.Collect(g.rootDir)

@@ -21,6 +21,7 @@ import (
 // Options configures a Service.
 type Options struct {
 	SkipFiles []string
+	SkipDirs  []string
 }
 
 // ProgressCallback receives workflow stage progress updates.
@@ -30,12 +31,14 @@ type ProgressCallback func(stage string, processed, total int)
 // Service orchestrates command workflows without Cobra dependencies.
 type Service struct {
 	skipFiles []string
+	skipDirs  []string
 }
 
 // New creates a use-case service.
 func New(opts Options) *Service {
 	return &Service{
 		skipFiles: append([]string(nil), opts.SkipFiles...),
+		skipDirs:  append([]string(nil), opts.SkipDirs...),
 	}
 }
 
@@ -259,6 +262,7 @@ func (s *Service) RunManifest(req ManifestRequest) (ManifestExecution, error) {
 
 	generatedManifest, err := g.Generate(manifest.GenerateOptions{
 		SkipFiles: s.skipFileList(),
+		SkipDirs:  s.skipDirList(),
 		OnProgress: func(processed, total int, _ string) {
 			progress.EmitStage(req.OnProgress, "hashing", processed, total)
 		},
@@ -285,6 +289,7 @@ func (s *Service) collectFiles(rootDir string) ([]collector.FileInfo, time.Durat
 
 	c := collector.New(collector.Options{
 		SkipFiles: s.skipFileList(),
+		SkipDirs:  s.skipDirList(),
 	})
 
 	files, err := c.Collect(rootDir)
@@ -496,6 +501,10 @@ func runDuplicateWorker(worker *deduplicator.Deduplicator, files []collector.Fil
 
 func (s *Service) skipFileList() []string {
 	return append([]string(nil), s.skipFiles...)
+}
+
+func (s *Service) skipDirList() []string {
+	return append([]string(nil), s.skipDirs...)
 }
 
 func resolveWorkflowTarget(targetDir string) (workflowTarget, error) {
