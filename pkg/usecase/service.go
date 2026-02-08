@@ -739,6 +739,10 @@ func isUnsafePathError(err error) bool {
 }
 
 // writeJournal creates a journal file in .btidy/journal/ and writes entries to it.
+// Each operation is written as a two-phase entry: first an intent entry
+// (Success=false) followed by a confirmation entry (Success=true). This enables
+// crash detection via journal.Validate() — if the process terminates between
+// intent and confirmation, the unconfirmed entry signals a partial write.
 func writeJournal(target workflowTarget, command string, entries []journal.Entry) (string, error) {
 	if len(entries) == 0 {
 		return "", nil
@@ -764,8 +768,16 @@ func writeJournal(target workflowTarget, command string, entries []journal.Entry
 	defer writer.Close()
 
 	for i := range entries {
+		// Write intent entry (Success=false).
+		intent := entries[i]
+		intent.Success = false
+		if logErr := writer.Log(intent); logErr != nil {
+			return journalPath, fmt.Errorf("write journal intent: %w", logErr)
+		}
+
+		// Write confirmation entry (Success=true).
 		if logErr := writer.Log(entries[i]); logErr != nil {
-			return journalPath, fmt.Errorf("write journal entry: %w", logErr)
+			return journalPath, fmt.Errorf("write journal confirmation: %w", logErr)
 		}
 	}
 
@@ -780,6 +792,18 @@ func relPath(rootDir, absPath string) string {
 		return absPath
 	}
 	return rel
+}
+
+// filterConfirmedEntries returns only entries with Success=true, filtering out
+// intent entries from the write-ahead journal format.
+func filterConfirmedEntries(entries []journal.Entry) []journal.Entry {
+	confirmed := make([]journal.Entry, 0, len(entries)/2)
+	for i := range entries {
+		if entries[i].Success {
+			confirmed = append(confirmed, entries[i])
+		}
+	}
+	return confirmed
 }
 
 // renameJournalEntries converts rename operations to journal entries.
@@ -964,6 +988,10 @@ func (s *Service) RunUndo(req UndoRequest) (UndoExecution, error) {
 		return UndoExecution{}, fmt.Errorf("read journal: %w", readErr)
 	}
 
+	// Filter out intent entries (Success=false) — they exist for crash detection
+	// via write-ahead journaling, not for undo processing.
+	confirmed := filterConfirmedEntries(entries)
+
 	runID := extractRunID(journalPath)
 
 	exec := UndoExecution{
@@ -973,7 +1001,7 @@ func (s *Service) RunUndo(req UndoRequest) (UndoExecution, error) {
 		DryRun:      req.DryRun,
 	}
 
-	for i, entry := range entries {
+	for i, entry := range confirmed {
 		op := undoEntry(target, entry, req.DryRun)
 		exec.Operations = append(exec.Operations, op)
 
@@ -988,7 +1016,7 @@ func (s *Service) RunUndo(req UndoRequest) (UndoExecution, error) {
 			exec.ReversedCount++
 		}
 
-		progress.EmitStage(req.OnProgress, "undoing", i+1, len(entries))
+		progress.EmitStage(req.OnProgress, "undoing", i+1, len(confirmed))
 	}
 
 	// Mark journal as rolled back by renaming to .rolled-back.jsonl.

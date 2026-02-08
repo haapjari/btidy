@@ -23,6 +23,18 @@ type zipFixtureEntry struct {
 	content []byte
 }
 
+// filterConfirmed returns only Success=true entries from a journal,
+// filtering out the intent entries from write-ahead journaling.
+func filterConfirmed(entries []journal.Entry) []journal.Entry {
+	var confirmed []journal.Entry
+	for i := range entries {
+		if entries[i].Success {
+			confirmed = append(confirmed, entries[i])
+		}
+	}
+	return confirmed
+}
+
 func writeZipArchive(t *testing.T, archivePath string, entries []zipFixtureEntry) {
 	t.Helper()
 
@@ -518,16 +530,19 @@ func TestService_RunDuplicate_WritesJournal(t *testing.T) {
 	entries, err := reader.Entries()
 	require.NoError(t, err)
 
-	require.Len(t, entries, 1, "should have one trash entry for the duplicate")
-	assert.Equal(t, "trash", entries[0].Type)
-	assert.True(t, entries[0].Success)
-	assert.NotEmpty(t, entries[0].Hash, "trash entry should include content hash")
-	assert.NotEmpty(t, entries[0].Source, "source path should not be empty")
-	assert.NotEmpty(t, entries[0].Dest, "dest (trash path) should not be empty")
+	// Filter for confirmed entries (write-ahead journal has intent+confirmation pairs).
+	confirmed := filterConfirmed(entries)
+
+	require.Len(t, confirmed, 1, "should have one trash entry for the duplicate")
+	assert.Equal(t, "trash", confirmed[0].Type)
+	assert.True(t, confirmed[0].Success)
+	assert.NotEmpty(t, confirmed[0].Hash, "trash entry should include content hash")
+	assert.NotEmpty(t, confirmed[0].Source, "source path should not be empty")
+	assert.NotEmpty(t, confirmed[0].Dest, "dest (trash path) should not be empty")
 
 	// Verify paths are relative (not absolute).
-	assert.False(t, filepath.IsAbs(entries[0].Source), "source should be a relative path")
-	assert.False(t, filepath.IsAbs(entries[0].Dest), "dest should be a relative path")
+	assert.False(t, filepath.IsAbs(confirmed[0].Source), "source should be a relative path")
+	assert.False(t, filepath.IsAbs(confirmed[0].Dest), "dest should be a relative path")
 }
 
 func TestService_RunFlatten_WritesJournal(t *testing.T) {
@@ -551,11 +566,13 @@ func TestService_RunFlatten_WritesJournal(t *testing.T) {
 	entries, err := reader.Entries()
 	require.NoError(t, err)
 
-	require.Len(t, entries, 1, "should have one rename entry for the moved file")
-	assert.Equal(t, "rename", entries[0].Type)
-	assert.True(t, entries[0].Success)
-	assert.Equal(t, filepath.Join("sub", "file.txt"), entries[0].Source)
-	assert.Equal(t, "file.txt", entries[0].Dest)
+	confirmed := filterConfirmed(entries)
+
+	require.Len(t, confirmed, 1, "should have one rename entry for the moved file")
+	assert.Equal(t, "rename", confirmed[0].Type)
+	assert.True(t, confirmed[0].Success)
+	assert.Equal(t, filepath.Join("sub", "file.txt"), confirmed[0].Source)
+	assert.Equal(t, "file.txt", confirmed[0].Dest)
 }
 
 func TestService_RunRename_DryRunSkipsJournal(t *testing.T) {
@@ -599,11 +616,13 @@ func TestService_RunRename_WritesJournal(t *testing.T) {
 	entries, err := reader.Entries()
 	require.NoError(t, err)
 
-	require.Len(t, entries, 1, "should have one rename entry")
-	assert.Equal(t, "rename", entries[0].Type)
-	assert.True(t, entries[0].Success)
-	assert.Equal(t, "My Document.pdf", entries[0].Source)
-	assert.Equal(t, "2018-06-15_my_document.pdf", entries[0].Dest)
+	confirmed := filterConfirmed(entries)
+
+	require.Len(t, confirmed, 1, "should have one rename entry")
+	assert.Equal(t, "rename", confirmed[0].Type)
+	assert.True(t, confirmed[0].Success)
+	assert.Equal(t, "My Document.pdf", confirmed[0].Source)
+	assert.Equal(t, "2018-06-15_my_document.pdf", confirmed[0].Dest)
 }
 
 func TestService_RunOrganize_WritesJournal(t *testing.T) {
@@ -627,11 +646,13 @@ func TestService_RunOrganize_WritesJournal(t *testing.T) {
 	entries, err := reader.Entries()
 	require.NoError(t, err)
 
-	require.Len(t, entries, 2, "should have two rename entries")
+	confirmed := filterConfirmed(entries)
+
+	require.Len(t, confirmed, 2, "should have two rename entries")
 
 	// Collect entries by source for stable assertions.
-	entryBySource := make(map[string]journal.Entry, len(entries))
-	for _, e := range entries {
+	entryBySource := make(map[string]journal.Entry, len(confirmed))
+	for _, e := range confirmed {
 		entryBySource[e.Source] = e
 	}
 
@@ -670,12 +691,14 @@ func TestService_RunUnzip_WritesJournal(t *testing.T) {
 	entries, err := reader.Entries()
 	require.NoError(t, err)
 
+	confirmed := filterConfirmed(entries)
+
 	// Should have an extract entry and a trash entry (deleted archive).
-	require.Len(t, entries, 2, "should have extract + trash entries")
+	require.Len(t, confirmed, 2, "should have extract + trash entries")
 
 	// Collect entries by type for stable assertions.
-	entryByType := make(map[string]journal.Entry, len(entries))
-	for _, e := range entries {
+	entryByType := make(map[string]journal.Entry, len(confirmed))
+	for _, e := range confirmed {
 		entryByType[e.Type] = e
 	}
 
@@ -947,10 +970,12 @@ func TestService_RunPurge_PurgesSpecificRun(t *testing.T) {
 	reader := journal.NewReader(dupExec.JournalPath)
 	entries, err := reader.Entries()
 	require.NoError(t, err)
-	require.Len(t, entries, 1)
+
+	confirmed := filterConfirmed(entries)
+	require.Len(t, confirmed, 1)
 
 	// The trash dest is like ".btidy/trash/<run-id>/b.txt" — extract run ID.
-	trashDest := entries[0].Dest
+	trashDest := confirmed[0].Dest
 	trashParts := strings.SplitN(trashDest, string(filepath.Separator), 4)
 	require.GreaterOrEqual(t, len(trashParts), 3, "expected .btidy/trash/<run-id>/...")
 	trashRunID := trashParts[2]
@@ -1211,9 +1236,11 @@ func TestService_RunUndo_SkipsWhenHashChanged(t *testing.T) {
 	reader := journal.NewReader(dupExec.JournalPath)
 	entries, err := reader.Entries()
 	require.NoError(t, err)
-	require.Len(t, entries, 1)
 
-	trashedAbs := filepath.Join(tmpDir, entries[0].Dest)
+	confirmed := filterConfirmed(entries)
+	require.Len(t, confirmed, 1)
+
+	trashedAbs := filepath.Join(tmpDir, confirmed[0].Dest)
 	require.NoError(t, os.WriteFile(trashedAbs, []byte("modified-content"), 0o644))
 
 	// Run undo — should skip the entry due to hash mismatch.
@@ -1252,10 +1279,12 @@ func TestService_RunUndo_ProceedsWhenNoHash(t *testing.T) {
 	reader := journal.NewReader(flatExec.JournalPath)
 	entries, err := reader.Entries()
 	require.NoError(t, err)
-	require.NotEmpty(t, entries)
+
+	confirmed := filterConfirmed(entries)
+	require.NotEmpty(t, confirmed)
 
 	hasRenameWithoutHash := false
-	for _, e := range entries {
+	for _, e := range confirmed {
 		if e.Type == "rename" && e.Hash == "" {
 			hasRenameWithoutHash = true
 		}
@@ -1271,4 +1300,63 @@ func TestService_RunUndo_ProceedsWhenNoHash(t *testing.T) {
 
 	assert.Positive(t, undoExec.ReversedCount, "should reverse-rename when no hash to verify")
 	assert.Equal(t, 0, undoExec.SkippedCount)
+}
+
+func TestService_WriteAheadJournal_IntentConfirmationPairs(t *testing.T) {
+	t.Parallel()
+
+	tmpDir := t.TempDir()
+	modTime := time.Date(2018, 6, 15, 12, 0, 0, 0, time.UTC)
+	testutil.CreateFileWithModTime(t, filepath.Join(tmpDir, "a.txt"), "same-content", modTime)
+	testutil.CreateFileWithModTime(t, filepath.Join(tmpDir, "b.txt"), "same-content", modTime)
+
+	s := New(Options{NoSnapshot: true})
+
+	dupExec, err := s.RunDuplicate(DuplicateRequest{
+		TargetDir: tmpDir,
+		DryRun:    false,
+		Workers:   2,
+	})
+	require.NoError(t, err)
+	require.NotEmpty(t, dupExec.JournalPath)
+
+	// Read raw entries (without filtering) to verify the two-phase format.
+	reader := journal.NewReader(dupExec.JournalPath)
+	entries, err := reader.Entries()
+	require.NoError(t, err)
+
+	// Each operation should produce exactly 2 entries: intent (ok=false) + confirmation (ok=true).
+	require.Len(t, entries, 2, "one operation should produce intent+confirmation pair")
+
+	intent := entries[0]
+	confirmation := entries[1]
+
+	assert.False(t, intent.Success, "first entry should be intent (ok=false)")
+	assert.True(t, confirmation.Success, "second entry should be confirmation (ok=true)")
+
+	// Intent and confirmation should share the same Type, Source, and Dest.
+	assert.Equal(t, confirmation.Type, intent.Type, "type should match between intent and confirmation")
+	assert.Equal(t, confirmation.Source, intent.Source, "source should match")
+	assert.Equal(t, confirmation.Dest, intent.Dest, "dest should match")
+}
+
+func TestService_WriteAheadJournal_ValidatePassesForCompleteJournal(t *testing.T) {
+	t.Parallel()
+
+	tmpDir := t.TempDir()
+	modTime := time.Date(2018, 6, 15, 12, 0, 0, 0, time.UTC)
+	testutil.CreateFileWithModTime(t, filepath.Join(tmpDir, "My Document.pdf"), "content", modTime)
+
+	s := New(Options{NoSnapshot: true})
+
+	renameExec, err := s.RunRename(RenameRequest{
+		TargetDir: tmpDir,
+		DryRun:    false,
+	})
+	require.NoError(t, err)
+	require.NotEmpty(t, renameExec.JournalPath)
+
+	// Validate should pass for a well-formed two-phase journal.
+	reader := journal.NewReader(renameExec.JournalPath)
+	require.NoError(t, reader.Validate(), "complete write-ahead journal should pass validation")
 }
