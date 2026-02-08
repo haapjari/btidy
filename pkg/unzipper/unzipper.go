@@ -12,6 +12,7 @@ import (
 	"strings"
 
 	"btidy/pkg/collector"
+	"btidy/pkg/progress"
 	"btidy/pkg/safepath"
 )
 
@@ -132,7 +133,7 @@ func (u *Unzipper) ExtractArchivesWithProgress(files []collector.FileInfo, onPro
 			sort.Strings(queue)
 		}
 
-		emitProgress(onProgress, len(result.Operations), len(result.Operations)+len(queue))
+		progress.EmitStage(onProgress, progressStageExtracting, len(result.Operations), len(result.Operations)+len(queue))
 	}
 
 	return result
@@ -362,21 +363,6 @@ func isDirectoryEntry(file *zip.File) bool {
 
 func isZipArchive(path string) bool {
 	return strings.EqualFold(filepath.Ext(path), ".zip")
-}
-
-func emitProgress(onProgress func(stage string, processed, total int), processed, total int) {
-	if onProgress == nil || total <= 0 {
-		return
-	}
-
-	if processed < 0 {
-		processed = 0
-	}
-	if processed > total {
-		processed = total
-	}
-
-	onProgress(progressStageExtracting, processed, total)
 }
 
 func (r *Result) accumulateOperation(op ExtractOperation) {

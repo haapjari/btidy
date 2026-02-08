@@ -18,7 +18,7 @@ GOTESTSUM := $(TOOLS_DIR)/gotestsum
 GOIMPORTS := $(TOOLS_DIR)/goimports
 GOVULNCHECK := $(TOOLS_DIR)/govulncheck
 
-GOLANGCI_LINT_VERSION := v1.64.8
+GOLANGCI_LINT_VERSION := v2.8.0
 GOTESTSUM_VERSION := latest
 GOIMPORTS_VERSION := latest
 GOVULNCHECK_VERSION := v1.1.4
@@ -146,7 +146,7 @@ $(TOOLS_DIR):
 
 $(GOLANGCI_LINT): | $(TOOLS_DIR)
 	@echo "Installing golangci-lint $(GOLANGCI_LINT_VERSION)..."
-	@GOBIN=$(TOOLS_DIR) $(GO) install github.com/golangci/golangci-lint/cmd/golangci-lint@$(GOLANGCI_LINT_VERSION)
+	@GOBIN=$(TOOLS_DIR) $(GO) install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@$(GOLANGCI_LINT_VERSION)
 
 $(GOTESTSUM): | $(TOOLS_DIR)
 	@echo "Installing gotestsum $(GOTESTSUM_VERSION)..."

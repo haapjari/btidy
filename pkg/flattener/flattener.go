@@ -9,7 +9,9 @@ import (
 
 	"btidy/pkg/collector"
 	"btidy/pkg/hasher"
+	"btidy/pkg/progress"
 	"btidy/pkg/safepath"
+	"btidy/pkg/sanitizer"
 )
 
 // MoveOperation represents a single move operation.
@@ -95,7 +97,7 @@ func (f *Flattener) FlattenFilesWithProgress(files []collector.FileInfo, onProgr
 
 	// Step 1: Pre-compute hashes for all files using parallel hashing.
 	fileHashes, invalidReadErrors := f.computeHashes(files, func(processed, total int) {
-		emitProgress(onProgress, progressStageHashing, processed, total)
+		progress.EmitStage(onProgress, progressStageHashing, processed, total)
 	})
 	if len(invalidReadErrors) > 0 {
 		for i := range files {
@@ -137,7 +139,7 @@ func (f *Flattener) FlattenFilesWithProgress(files []collector.FileInfo, onProgr
 			result.MovedCount++
 		}
 
-		emitProgress(onProgress, progressStageMoving, i+1, totalFiles)
+		progress.EmitStage(onProgress, progressStageMoving, i+1, totalFiles)
 	}
 
 	// Remove empty directories if not dry run.
@@ -172,7 +174,7 @@ func (f *Flattener) computeHashes(files []collector.FileInfo, onProgress func(pr
 	total := len(toHash)
 	for result := range f.hasher.HashFilesWithSizes(toHash) {
 		processed++
-		reportProgress(onProgress, processed, total)
+		progress.Emit(onProgress, processed, total)
 
 		if result.Error == nil {
 			hashes[result.Path] = result.Hash
@@ -226,13 +228,8 @@ func (f *Flattener) processFile(file *collector.FileInfo, hash string, seenHash 
 	}
 
 	// Determine target path, handling name conflicts.
-	targetName := file.Name
 	count := nameCount[file.Name]
-	if count > 0 {
-		ext := filepath.Ext(file.Name)
-		base := file.Name[:len(file.Name)-len(ext)]
-		targetName = fmt.Sprintf("%s_%d%s", base, count, ext)
-	}
+	targetName := sanitizer.ResolveNameConflict(file.Name, count)
 	nameCount[file.Name] = count + 1
 
 	op.NewPath = filepath.Join(f.rootDir, targetName)
@@ -263,10 +260,7 @@ func (f *Flattener) removeEmptyDirs() int {
 	// Walk bottom-up by collecting all dirs first.
 	var dirs []string
 	err := filepath.Walk(f.rootDir, func(path string, info os.FileInfo, walkErr error) error {
-		if walkErr != nil {
-			return nil //nolint:nilerr // Continue walking despite errors.
-		}
-		if info.IsDir() && path != f.rootDir {
+		if walkErr == nil && info.IsDir() && path != f.rootDir {
 			dirs = append(dirs, path)
 		}
 		return nil
@@ -300,34 +294,4 @@ func (f *Flattener) DryRun() bool {
 // Root returns the root directory being validated against.
 func (f *Flattener) Root() string {
 	return f.validator.Root()
-}
-
-func emitProgress(onProgress func(stage string, processed, total int), stage string, processed, total int) {
-	if onProgress == nil || total <= 0 {
-		return
-	}
-
-	if processed < 0 {
-		processed = 0
-	}
-	if processed > total {
-		processed = total
-	}
-
-	onProgress(stage, processed, total)
-}
-
-func reportProgress(onProgress func(processed, total int), processed, total int) {
-	if onProgress == nil || total <= 0 {
-		return
-	}
-
-	if processed < 0 {
-		processed = 0
-	}
-	if processed > total {
-		processed = total
-	}
-
-	onProgress(processed, total)
 }

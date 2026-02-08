@@ -12,6 +12,7 @@ import (
 	"btidy/pkg/flattener"
 	"btidy/pkg/manifest"
 	"btidy/pkg/organizer"
+	"btidy/pkg/progress"
 	"btidy/pkg/renamer"
 	"btidy/pkg/safepath"
 	"btidy/pkg/unzipper"
@@ -259,7 +260,7 @@ func (s *Service) RunManifest(req ManifestRequest) (ManifestExecution, error) {
 	generatedManifest, err := g.Generate(manifest.GenerateOptions{
 		SkipFiles: s.skipFileList(),
 		OnProgress: func(processed, total int, _ string) {
-			emitProgress(req.OnProgress, "hashing", processed, total)
+			progress.EmitStage(req.OnProgress, "hashing", processed, total)
 		},
 	})
 	if err != nil {
@@ -360,18 +361,17 @@ func runCheckedExecution[T any, E any, O any](
 	return execution, nil
 }
 
-//nolint:dupl // structurally similar to organizeExecutor but different types prevent generic unification.
 func renameExecutor(dryRun bool, onProgress ProgressCallback) func(rootDir string, validator *safepath.Validator, files []collector.FileInfo) (renamer.Result, error) {
-	return func(_ string, validator *safepath.Validator, files []collector.FileInfo) (renamer.Result, error) {
-		r, err := renamer.NewWithValidator(validator, dryRun)
-		if err != nil {
-			return renamer.Result{}, fmt.Errorf("failed to create renamer: %w", err)
-		}
-
-		return r.RenameFilesWithProgress(files, func(processed, total int) {
-			emitProgress(onProgress, "renaming", processed, total)
-		}), nil
-	}
+	return simpleExecutor(
+		dryRun,
+		onProgress,
+		renamer.NewWithValidator,
+		"failed to create renamer",
+		"renaming",
+		func(w *renamer.Renamer, files []collector.FileInfo, cb func(processed, total int)) renamer.Result {
+			return w.RenameFilesWithProgress(files, cb)
+		},
+	)
 }
 
 func flattenExecutor(dryRun bool, workers int, onProgress ProgressCallback) func(rootDir string, validator *safepath.Validator, files []collector.FileInfo) (flattener.Result, error) {
@@ -404,21 +404,41 @@ func unzipExecutor(dryRun bool, onProgress ProgressCallback) func(rootDir string
 		}
 
 		return u.ExtractArchivesWithProgress(files, func(stage string, processed, total int) {
-			emitProgress(onProgress, stage, processed, total)
+			progress.EmitStage(onProgress, stage, processed, total)
 		}), nil
 	}
 }
 
-//nolint:dupl // structurally similar to renameExecutor but different types prevent generic unification.
 func organizeExecutor(dryRun bool, onProgress ProgressCallback) func(rootDir string, validator *safepath.Validator, files []collector.FileInfo) (organizer.Result, error) {
-	return func(_ string, validator *safepath.Validator, files []collector.FileInfo) (organizer.Result, error) {
-		o, err := organizer.NewWithValidator(validator, dryRun)
+	return simpleExecutor(
+		dryRun,
+		onProgress,
+		organizer.NewWithValidator,
+		"failed to create organizer",
+		"organizing",
+		func(w *organizer.Organizer, files []collector.FileInfo, cb func(processed, total int)) organizer.Result {
+			return w.OrganizeFilesWithProgress(files, cb)
+		},
+	)
+}
+
+func simpleExecutor[Worker any, Result any](
+	dryRun bool,
+	onProgress ProgressCallback,
+	newWorker func(*safepath.Validator, bool) (Worker, error),
+	createErrContext string,
+	stageLabel string,
+	run func(Worker, []collector.FileInfo, func(processed, total int)) Result,
+) func(string, *safepath.Validator, []collector.FileInfo) (Result, error) {
+	return func(_ string, validator *safepath.Validator, files []collector.FileInfo) (Result, error) {
+		w, err := newWorker(validator, dryRun)
 		if err != nil {
-			return organizer.Result{}, fmt.Errorf("failed to create organizer: %w", err)
+			var zero Result
+			return zero, fmt.Errorf("%s: %w", createErrContext, err)
 		}
 
-		return o.OrganizeFilesWithProgress(files, func(processed, total int) {
-			emitProgress(onProgress, "organizing", processed, total)
+		return run(w, files, func(processed, total int) {
+			progress.EmitStage(onProgress, stageLabel, processed, total)
 		}), nil
 	}
 }
@@ -440,7 +460,7 @@ func executeWorkerWorkflow[Worker any, Result any](
 	}
 
 	return run(worker, files, func(stage string, processed, total int) {
-		emitProgress(onProgress, stage, processed, total)
+		progress.EmitStage(onProgress, stage, processed, total)
 	}), nil
 }
 
@@ -466,27 +486,12 @@ func workerExecutor[Worker any, Result any](
 	}
 }
 
-func runFlattenWorker(worker *flattener.Flattener, files []collector.FileInfo, progress func(stage string, processed, total int)) flattener.Result {
-	return worker.FlattenFilesWithProgress(files, progress)
+func runFlattenWorker(worker *flattener.Flattener, files []collector.FileInfo, onProgress func(stage string, processed, total int)) flattener.Result {
+	return worker.FlattenFilesWithProgress(files, onProgress)
 }
 
-func runDuplicateWorker(worker *deduplicator.Deduplicator, files []collector.FileInfo, progress func(stage string, processed, total int)) deduplicator.Result {
-	return worker.FindDuplicatesWithProgress(files, progress)
-}
-
-func emitProgress(onProgress ProgressCallback, stage string, processed, total int) {
-	if onProgress == nil || total <= 0 {
-		return
-	}
-
-	if processed < 0 {
-		processed = 0
-	}
-	if processed > total {
-		processed = total
-	}
-
-	onProgress(stage, processed, total)
+func runDuplicateWorker(worker *deduplicator.Deduplicator, files []collector.FileInfo, onProgress func(stage string, processed, total int)) deduplicator.Result {
+	return worker.FindDuplicatesWithProgress(files, onProgress)
 }
 
 func (s *Service) skipFileList() []string {

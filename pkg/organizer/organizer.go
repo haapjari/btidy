@@ -8,7 +8,9 @@ import (
 	"strings"
 
 	"btidy/pkg/collector"
+	"btidy/pkg/progress"
 	"btidy/pkg/safepath"
+	"btidy/pkg/sanitizer"
 )
 
 // MoveOperation represents a single organize operation.
@@ -78,11 +80,16 @@ func (o *Organizer) OrganizeFilesWithProgress(files []collector.FileInfo, onProg
 	}
 
 	// Validate all source paths for read safety (fail-fast on symlink escape).
-	invalidOps := o.collectInvalidSourceReadOps(files)
+	_, invalidOps := safepath.ValidateReadPaths(o.validator, files, func(file collector.FileInfo, err error) MoveOperation {
+		return MoveOperation{
+			OriginalPath: file.Path,
+			Error:        fmt.Errorf("source path escapes root: %w", err),
+		}
+	})
 	if len(invalidOps) > 0 {
 		result.Operations = append(result.Operations, invalidOps...)
 		result.ErrorCount = len(invalidOps)
-		reportProgress(onProgress, len(files), len(files))
+		progress.Emit(onProgress, len(files), len(files))
 		return result
 	}
 
@@ -103,7 +110,7 @@ func (o *Organizer) OrganizeFilesWithProgress(files []collector.FileInfo, onProg
 			result.MovedCount++
 		}
 
-		reportProgress(onProgress, i+1, totalFiles)
+		progress.Emit(onProgress, i+1, totalFiles)
 	}
 
 	result.CreatedDirsCount = len(createdDirs)
@@ -140,13 +147,8 @@ func (o *Organizer) processFile(file *collector.FileInfo, nameCount map[string]m
 	}
 
 	// Handle name conflicts with _1, _2 suffixes.
-	targetName := file.Name
 	count := nameCount[targetDir][file.Name]
-	if count > 0 {
-		fileExt := filepath.Ext(file.Name)
-		base := file.Name[:len(file.Name)-len(fileExt)]
-		targetName = fmt.Sprintf("%s_%d%s", base, count, fileExt)
-	}
+	targetName := sanitizer.ResolveNameConflict(file.Name, count)
 	nameCount[targetDir][file.Name] = count + 1
 
 	op.NewPath = filepath.Join(targetDir, targetName)
@@ -188,20 +190,6 @@ func (o *Organizer) ensureDir(targetDir string, createdDirs map[string]bool) err
 	return nil
 }
 
-func (o *Organizer) collectInvalidSourceReadOps(files []collector.FileInfo) []MoveOperation {
-	invalidOps := make([]MoveOperation, 0)
-	for _, file := range files {
-		if err := o.validator.ValidatePathForRead(file.Path); err != nil {
-			invalidOps = append(invalidOps, MoveOperation{
-				OriginalPath: file.Path,
-				Error:        fmt.Errorf("source path escapes root: %w", err),
-			})
-		}
-	}
-
-	return invalidOps
-}
-
 // extensionCategory returns the lowercase extension (without dot) for a filename,
 // or "other" if the file has no extension.
 // Dotfiles like ".gitignore" (where the name starts with dot and has no other extension)
@@ -230,19 +218,4 @@ func (o *Organizer) DryRun() bool {
 // Root returns the root directory being validated against.
 func (o *Organizer) Root() string {
 	return o.validator.Root()
-}
-
-func reportProgress(onProgress func(processed, total int), processed, total int) {
-	if onProgress == nil || total <= 0 {
-		return
-	}
-
-	if processed < 0 {
-		processed = 0
-	}
-	if processed > total {
-		processed = total
-	}
-
-	onProgress(processed, total)
 }

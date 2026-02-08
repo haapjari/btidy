@@ -11,6 +11,7 @@ import (
 
 	"btidy/pkg/collector"
 	"btidy/pkg/hasher"
+	"btidy/pkg/progress"
 	"btidy/pkg/safepath"
 	"btidy/pkg/sanitizer"
 )
@@ -89,11 +90,17 @@ func (r *Renamer) RenameFilesWithProgress(files []collector.FileInfo, onProgress
 	}
 	totalFiles := len(files)
 
-	invalidReadOps := r.collectInvalidSourceReadOps(files)
+	_, invalidReadOps := safepath.ValidateReadPaths(r.validator, files, func(file collector.FileInfo, err error) RenameOperation {
+		return RenameOperation{
+			OriginalPath: file.Path,
+			OriginalName: file.Name,
+			Error:        fmt.Errorf("source path escapes root: %w", err),
+		}
+	})
 	if len(invalidReadOps) > 0 {
 		result.Operations = append(result.Operations, invalidReadOps...)
 		result.ErrorCount = len(invalidReadOps)
-		reportProgress(onProgress, totalFiles, totalFiles)
+		progress.Emit(onProgress, totalFiles, totalFiles)
 		return result
 	}
 
@@ -114,40 +121,10 @@ func (r *Renamer) RenameFilesWithProgress(files []collector.FileInfo, onProgress
 			result.RenamedCount++
 		}
 
-		reportProgress(onProgress, i+1, totalFiles)
+		progress.Emit(onProgress, i+1, totalFiles)
 	}
 
 	return result
-}
-
-func reportProgress(onProgress func(processed, total int), processed, total int) {
-	if onProgress == nil || total <= 0 {
-		return
-	}
-
-	if processed < 0 {
-		processed = 0
-	}
-	if processed > total {
-		processed = total
-	}
-
-	onProgress(processed, total)
-}
-
-func (r *Renamer) collectInvalidSourceReadOps(files []collector.FileInfo) []RenameOperation {
-	invalidOps := make([]RenameOperation, 0)
-	for _, file := range files {
-		if err := r.validator.ValidatePathForRead(file.Path); err != nil {
-			invalidOps = append(invalidOps, RenameOperation{
-				OriginalPath: file.Path,
-				OriginalName: file.Name,
-				Error:        fmt.Errorf("source path escapes root: %w", err),
-			})
-		}
-	}
-
-	return invalidOps
 }
 
 // processFile handles renaming a single file.

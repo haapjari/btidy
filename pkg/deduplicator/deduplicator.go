@@ -13,6 +13,7 @@ import (
 
 	"btidy/pkg/collector"
 	"btidy/pkg/hasher"
+	"btidy/pkg/progress"
 	"btidy/pkg/safepath"
 )
 
@@ -103,7 +104,13 @@ func (d *Deduplicator) FindDuplicatesWithProgress(files []collector.FileInfo, on
 		return result
 	}
 
-	safeFiles, invalidReadOps := d.filterUnsafeReadPaths(files)
+	safeFiles, invalidReadOps := safepath.ValidateReadPaths(d.validator, files, func(file collector.FileInfo, err error) DeleteOperation {
+		return DeleteOperation{
+			Path:  file.Path,
+			Size:  file.Size,
+			Error: fmt.Errorf("path escapes root: %w", err),
+		}
+	})
 	result.Operations = append(result.Operations, invalidReadOps...)
 	if len(invalidReadOps) > 0 {
 		sort.Slice(result.Operations, func(i, j int) bool {
@@ -134,7 +141,7 @@ func (d *Deduplicator) FindDuplicatesWithProgress(files []collector.FileInfo, on
 				op := d.deleteFile(duplicateGroups[i].Dupes[j], duplicateGroups[i].Keep.Path, duplicateGroups[i].Hash)
 				result.Operations = append(result.Operations, op)
 				deleteProcessed++
-				emitProgress(onProgress, progressStageDeleting, deleteProcessed, deleteTotal)
+				progress.EmitStage(onProgress, progressStageDeleting, deleteProcessed, deleteTotal)
 			}
 		}
 	}
@@ -165,26 +172,6 @@ func (r *Result) calculateCounts() {
 			r.BytesRecovered += op.Size
 		}
 	}
-}
-
-func (d *Deduplicator) filterUnsafeReadPaths(files []collector.FileInfo) ([]collector.FileInfo, []DeleteOperation) {
-	safeFiles := make([]collector.FileInfo, 0, len(files))
-	invalidReadOps := make([]DeleteOperation, 0)
-
-	for _, file := range files {
-		if err := d.validator.ValidatePathForRead(file.Path); err != nil {
-			invalidReadOps = append(invalidReadOps, DeleteOperation{
-				Path:  file.Path,
-				Size:  file.Size,
-				Error: fmt.Errorf("path escapes root: %w", err),
-			})
-			continue
-		}
-
-		safeFiles = append(safeFiles, file)
-	}
-
-	return safeFiles, invalidReadOps
 }
 
 // groupBySize groups files by their size.
@@ -254,7 +241,7 @@ func (d *Deduplicator) groupFilesByHash(files []collector.FileInfo, hashFn func(
 	total := len(files)
 	for result := range hashFn(toHash) {
 		processed++
-		emitProgress(onProgress, stage, processed, total)
+		progress.EmitStage(onProgress, stage, processed, total)
 
 		if result.Error != nil {
 			continue
@@ -334,19 +321,4 @@ func (d *Deduplicator) Root() string {
 func ComputeFileHash(path string) (string, error) {
 	h := hasher.New()
 	return h.ComputeHash(path)
-}
-
-func emitProgress(onProgress func(stage string, processed, total int), stage string, processed, total int) {
-	if onProgress == nil || total <= 0 {
-		return
-	}
-
-	if processed < 0 {
-		processed = 0
-	}
-	if processed > total {
-		processed = total
-	}
-
-	onProgress(stage, processed, total)
 }
