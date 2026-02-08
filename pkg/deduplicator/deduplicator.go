@@ -16,6 +16,7 @@ import (
 	"btidy/pkg/hasher"
 	"btidy/pkg/progress"
 	"btidy/pkg/safepath"
+	"btidy/pkg/trash"
 )
 
 // DeleteOperation represents a single delete operation.
@@ -24,6 +25,7 @@ type DeleteOperation struct {
 	OriginalOf string // Path of the original file this is a duplicate of
 	Size       int64
 	Hash       string // SHA256 hash of the file
+	TrashedTo  string // Trash destination (empty when trasher is nil)
 	Skipped    bool
 	SkipReason string
 	Error      error
@@ -45,6 +47,7 @@ type Deduplicator struct {
 	dryRun    bool
 	validator *safepath.Validator
 	hasher    *hasher.Hasher
+	trasher   *trash.Trasher
 }
 
 const (
@@ -64,11 +67,12 @@ func NewWithWorkers(rootDir string, dryRun bool, workers int) (*Deduplicator, er
 		return nil, fmt.Errorf("failed to create path validator: %w", err)
 	}
 
-	return NewWithValidator(v, dryRun, workers)
+	return NewWithValidator(v, dryRun, workers, nil)
 }
 
 // NewWithValidator creates a new Deduplicator with an existing validator.
-func NewWithValidator(validator *safepath.Validator, dryRun bool, workers int) (*Deduplicator, error) {
+// An optional trasher enables soft-delete (move to trash) instead of permanent removal.
+func NewWithValidator(validator *safepath.Validator, dryRun bool, workers int, trasher *trash.Trasher) (*Deduplicator, error) {
 	if validator == nil {
 		return nil, errors.New("validator is required")
 	}
@@ -77,6 +81,7 @@ func NewWithValidator(validator *safepath.Validator, dryRun bool, workers int) (
 		dryRun:    dryRun,
 		validator: validator,
 		hasher:    hasher.New(hasher.WithWorkers(workers)),
+		trasher:   trasher,
 	}, nil
 }
 
@@ -305,12 +310,24 @@ func (d *Deduplicator) deleteFile(file collector.FileInfo, originalPath, hash st
 			return op
 		}
 
-		if err := d.validator.SafeRemove(file.Path); err != nil {
-			op.Error = fmt.Errorf("failed to delete: %w", err)
-		}
+		op.TrashedTo, op.Error = d.trashOrRemove(file.Path)
 	}
 
 	return op
+}
+
+// trashOrRemove soft-deletes a file when a trasher is configured, otherwise
+// permanently removes it. Returns the trash destination (empty on hard delete).
+func (d *Deduplicator) trashOrRemove(path string) (string, error) {
+	if d.trasher != nil {
+		return d.trasher.TrashWithDest(path)
+	}
+
+	if err := d.validator.SafeRemove(path); err != nil {
+		return "", fmt.Errorf("failed to delete: %w", err)
+	}
+
+	return "", nil
 }
 
 // DryRun returns whether the deduplicator is in dry-run mode.

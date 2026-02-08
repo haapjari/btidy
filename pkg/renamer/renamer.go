@@ -14,6 +14,7 @@ import (
 	"btidy/pkg/progress"
 	"btidy/pkg/safepath"
 	"btidy/pkg/sanitizer"
+	"btidy/pkg/trash"
 )
 
 // RenameOperation represents a single rename operation.
@@ -25,6 +26,7 @@ type RenameOperation struct {
 	Skipped      bool
 	SkipReason   string
 	Deleted      bool
+	TrashedTo    string // Trash destination (empty when trasher is nil)
 	Error        error
 }
 
@@ -43,6 +45,7 @@ type Renamer struct {
 	dryRun    bool
 	validator *safepath.Validator
 	hasher    *hasher.Hasher
+	trasher   *trash.Trasher
 }
 
 var tbdPrefixPattern = regexp.MustCompile(`^\d{4}-TBD-TBD_`)
@@ -61,11 +64,12 @@ func New(rootDir string, dryRun bool) (*Renamer, error) {
 		return nil, fmt.Errorf("failed to create path validator: %w", err)
 	}
 
-	return NewWithValidator(v, dryRun)
+	return NewWithValidator(v, dryRun, nil)
 }
 
 // NewWithValidator creates a new Renamer with an existing validator.
-func NewWithValidator(validator *safepath.Validator, dryRun bool) (*Renamer, error) {
+// An optional trasher enables soft-delete (move to trash) instead of permanent removal.
+func NewWithValidator(validator *safepath.Validator, dryRun bool, trasher *trash.Trasher) (*Renamer, error) {
 	if validator == nil {
 		return nil, errors.New("validator is required")
 	}
@@ -74,6 +78,7 @@ func NewWithValidator(validator *safepath.Validator, dryRun bool) (*Renamer, err
 		dryRun:    dryRun,
 		validator: validator,
 		hasher:    hasher.New(),
+		trasher:   trasher,
 	}, nil
 }
 
@@ -310,9 +315,13 @@ func (r *Renamer) markAsDuplicate(op *RenameOperation, f collector.FileInfo, exp
 		return
 	}
 
-	if err := r.validator.SafeRemove(f.Path); err != nil {
-		op.Error = err
+	trashedTo, trashErr := r.trashOrRemove(f.Path)
+	if trashErr != nil {
+		op.Error = trashErr
+		op.Deleted = false
+		return
 	}
+	op.TrashedTo = trashedTo
 }
 
 func (r *Renamer) handleExistingTarget(op *RenameOperation, f collector.FileInfo, info os.FileInfo) {
@@ -348,7 +357,26 @@ func (r *Renamer) handleExistingTarget(op *RenameOperation, f collector.FileInfo
 	}
 
 	op.Deleted = true
-	if removeErr := r.validator.SafeRemove(f.Path); removeErr != nil {
-		op.Error = removeErr
+
+	trashedTo, trashErr := r.trashOrRemove(f.Path)
+	if trashErr != nil {
+		op.Error = trashErr
+		op.Deleted = false
+		return
 	}
+	op.TrashedTo = trashedTo
+}
+
+// trashOrRemove soft-deletes a file when a trasher is configured, otherwise
+// permanently removes it. Returns the trash destination (empty on hard delete).
+func (r *Renamer) trashOrRemove(path string) (string, error) {
+	if r.trasher != nil {
+		return r.trasher.TrashWithDest(path)
+	}
+
+	if err := r.validator.SafeRemove(path); err != nil {
+		return "", fmt.Errorf("failed to delete: %w", err)
+	}
+
+	return "", nil
 }

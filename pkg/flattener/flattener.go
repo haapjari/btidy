@@ -12,6 +12,7 @@ import (
 	"btidy/pkg/progress"
 	"btidy/pkg/safepath"
 	"btidy/pkg/sanitizer"
+	"btidy/pkg/trash"
 )
 
 // MoveOperation represents a single move operation.
@@ -20,6 +21,7 @@ type MoveOperation struct {
 	NewPath      string
 	Hash         string // SHA256 content hash
 	Duplicate    bool   // true if this file was deleted as duplicate
+	TrashedTo    string // Trash destination (empty when trasher is nil)
 	Skipped      bool   // true if skipped (e.g., already in root)
 	SkipReason   string
 	Error        error
@@ -42,6 +44,7 @@ type Flattener struct {
 	rootDir   string
 	validator *safepath.Validator
 	hasher    *hasher.Hasher
+	trasher   *trash.Trasher
 }
 
 const (
@@ -61,11 +64,12 @@ func NewWithWorkers(rootDir string, dryRun bool, workers int) (*Flattener, error
 		return nil, fmt.Errorf("failed to create path validator: %w", err)
 	}
 
-	return NewWithValidator(v, dryRun, workers)
+	return NewWithValidator(v, dryRun, workers, nil)
 }
 
 // NewWithValidator creates a new Flattener with an existing validator.
-func NewWithValidator(validator *safepath.Validator, dryRun bool, workers int) (*Flattener, error) {
+// An optional trasher enables soft-delete (move to trash) instead of permanent removal.
+func NewWithValidator(validator *safepath.Validator, dryRun bool, workers int, trasher *trash.Trasher) (*Flattener, error) {
 	if validator == nil {
 		return nil, errors.New("validator is required")
 	}
@@ -75,6 +79,7 @@ func NewWithValidator(validator *safepath.Validator, dryRun bool, workers int) (
 		dryRun:    dryRun,
 		validator: validator,
 		hasher:    hasher.New(hasher.WithWorkers(workers)),
+		trasher:   trasher,
 	}, nil
 }
 
@@ -260,11 +265,23 @@ func (f *Flattener) handleDuplicate(op *MoveOperation, dupPath, existingPath str
 			return *op
 		}
 
-		if err := f.validator.SafeRemove(dupPath); err != nil {
-			op.Error = fmt.Errorf("failed to delete duplicate: %w", err)
-		}
+		op.TrashedTo, op.Error = f.trashOrRemove(dupPath)
 	}
 	return *op
+}
+
+// trashOrRemove soft-deletes a file when a trasher is configured, otherwise
+// permanently removes it. Returns the trash destination (empty on hard delete).
+func (f *Flattener) trashOrRemove(path string) (string, error) {
+	if f.trasher != nil {
+		return f.trasher.TrashWithDest(path)
+	}
+
+	if err := f.validator.SafeRemove(path); err != nil {
+		return "", fmt.Errorf("failed to delete duplicate: %w", err)
+	}
+
+	return "", nil
 }
 
 // removeEmptyDirs removes all empty directories under rootDir.

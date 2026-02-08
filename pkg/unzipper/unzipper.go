@@ -15,6 +15,7 @@ import (
 	"btidy/pkg/collector"
 	"btidy/pkg/progress"
 	"btidy/pkg/safepath"
+	"btidy/pkg/trash"
 )
 
 const (
@@ -30,6 +31,7 @@ type ExtractOperation struct {
 	NestedArchives     int
 	ExtractionComplete bool
 	DeletedArchive     bool
+	TrashedTo          string // Trash destination for deleted archive (empty when trasher is nil)
 	Skipped            bool
 	SkipReason         string
 	Error              error
@@ -53,6 +55,7 @@ type Result struct {
 type Unzipper struct {
 	dryRun    bool
 	validator *safepath.Validator
+	trasher   *trash.Trasher
 }
 
 type entryResult struct {
@@ -68,11 +71,12 @@ func New(rootDir string, dryRun bool) (*Unzipper, error) {
 		return nil, fmt.Errorf("failed to create path validator: %w", err)
 	}
 
-	return NewWithValidator(validator, dryRun)
+	return NewWithValidator(validator, dryRun, nil)
 }
 
 // NewWithValidator creates an Unzipper with an existing validator.
-func NewWithValidator(validator *safepath.Validator, dryRun bool) (*Unzipper, error) {
+// An optional trasher enables soft-delete (move to trash) instead of permanent removal.
+func NewWithValidator(validator *safepath.Validator, dryRun bool, trasher *trash.Trasher) (*Unzipper, error) {
 	if validator == nil {
 		return nil, errors.New("validator is required")
 	}
@@ -80,6 +84,7 @@ func NewWithValidator(validator *safepath.Validator, dryRun bool) (*Unzipper, er
 	return &Unzipper{
 		dryRun:    dryRun,
 		validator: validator,
+		trasher:   trasher,
 	}, nil
 }
 
@@ -195,12 +200,29 @@ func (u *Unzipper) processArchive(archivePath string) (operation ExtractOperatio
 		return operation, nil
 	}
 
-	if err := u.validator.SafeRemove(archivePath); err != nil {
+	trashedTo, trashErr := u.trashOrRemove(archivePath)
+	if trashErr != nil {
 		operation.DeletedArchive = false
-		operation.Error = fmt.Errorf("failed to delete archive: %w", err)
+		operation.Error = trashErr
+	} else {
+		operation.TrashedTo = trashedTo
 	}
 
 	return operation, discovered
+}
+
+// trashOrRemove soft-deletes a file when a trasher is configured, otherwise
+// permanently removes it. Returns the trash destination (empty on hard delete).
+func (u *Unzipper) trashOrRemove(path string) (string, error) {
+	if u.trasher != nil {
+		return u.trasher.TrashWithDest(path)
+	}
+
+	if err := u.validator.SafeRemove(path); err != nil {
+		return "", fmt.Errorf("failed to delete archive: %w", err)
+	}
+
+	return "", nil
 }
 
 func (u *Unzipper) verifyExtractedFiles(entries []*zip.File, destinationDir string) error {

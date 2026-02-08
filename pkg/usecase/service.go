@@ -11,10 +11,12 @@ import (
 	"btidy/pkg/deduplicator"
 	"btidy/pkg/flattener"
 	"btidy/pkg/manifest"
+	"btidy/pkg/metadata"
 	"btidy/pkg/organizer"
 	"btidy/pkg/progress"
 	"btidy/pkg/renamer"
 	"btidy/pkg/safepath"
+	"btidy/pkg/trash"
 	"btidy/pkg/unzipper"
 )
 
@@ -367,43 +369,83 @@ func runCheckedExecution[T any, E any, O any](
 }
 
 func renameExecutor(dryRun bool, onProgress ProgressCallback) func(rootDir string, validator *safepath.Validator, files []collector.FileInfo) (renamer.Result, error) {
-	return simpleExecutor(
-		dryRun,
-		onProgress,
-		renamer.NewWithValidator,
-		"failed to create renamer",
-		"renaming",
-		func(w *renamer.Renamer, files []collector.FileInfo, cb func(processed, total int)) renamer.Result {
-			return w.RenameFilesWithProgress(files, cb)
+	return func(rootDir string, validator *safepath.Validator, files []collector.FileInfo) (renamer.Result, error) {
+		trasher, err := initTrasher(rootDir, validator, "rename")
+		if err != nil {
+			return renamer.Result{}, fmt.Errorf("failed to initialize trash: %w", err)
+		}
+
+		r, err := renamer.NewWithValidator(validator, dryRun, trasher)
+		if err != nil {
+			return renamer.Result{}, fmt.Errorf("failed to create renamer: %w", err)
+		}
+
+		return r.RenameFilesWithProgress(files, func(processed, total int) {
+			progress.EmitStage(onProgress, "renaming", processed, total)
+		}), nil
+	}
+}
+
+func flattenExecutor(dryRun bool, workers int, onProgress ProgressCallback) func(rootDir string, validator *safepath.Validator, files []collector.FileInfo) (flattener.Result, error) {
+	return trashedWorkerExecutor(
+		dryRun, workers, onProgress, "flatten",
+		flattener.NewWithValidator,
+		"failed to create flattener",
+		func(f *flattener.Flattener, files []collector.FileInfo, cb func(string, int, int)) flattener.Result {
+			return f.FlattenFilesWithProgress(files, cb)
 		},
 	)
 }
 
-func flattenExecutor(dryRun bool, workers int, onProgress ProgressCallback) func(rootDir string, validator *safepath.Validator, files []collector.FileInfo) (flattener.Result, error) {
-	return workerExecutor(
-		dryRun,
-		workers,
-		onProgress,
-		flattener.NewWithValidator,
-		"failed to create flattener",
-		runFlattenWorker,
+func duplicateExecutor(dryRun bool, workers int, onProgress ProgressCallback) func(rootDir string, validator *safepath.Validator, files []collector.FileInfo) (deduplicator.Result, error) {
+	return trashedWorkerExecutor(
+		dryRun, workers, onProgress, "duplicate",
+		deduplicator.NewWithValidator,
+		"failed to create deduplicator",
+		func(d *deduplicator.Deduplicator, files []collector.FileInfo, cb func(string, int, int)) deduplicator.Result {
+			return d.FindDuplicatesWithProgress(files, cb)
+		},
 	)
 }
 
-func duplicateExecutor(dryRun bool, workers int, onProgress ProgressCallback) func(rootDir string, validator *safepath.Validator, files []collector.FileInfo) (deduplicator.Result, error) {
-	return workerExecutor(
-		dryRun,
-		workers,
-		onProgress,
-		deduplicator.NewWithValidator,
-		"failed to create deduplicator",
-		runDuplicateWorker,
-	)
+// trashedWorkerExecutor creates an executor for domain packages that accept
+// (validator, dryRun, workers, trasher) and produce staged progress.
+func trashedWorkerExecutor[Worker any, Result any](
+	dryRun bool,
+	workers int,
+	onProgress ProgressCallback,
+	command string,
+	newWorker func(*safepath.Validator, bool, int, *trash.Trasher) (Worker, error),
+	createErrContext string,
+	run func(Worker, []collector.FileInfo, func(string, int, int)) Result,
+) func(string, *safepath.Validator, []collector.FileInfo) (Result, error) {
+	return func(rootDir string, validator *safepath.Validator, files []collector.FileInfo) (Result, error) {
+		trasher, err := initTrasher(rootDir, validator, command)
+		if err != nil {
+			var zero Result
+			return zero, fmt.Errorf("failed to initialize trash: %w", err)
+		}
+
+		w, err := newWorker(validator, dryRun, workers, trasher)
+		if err != nil {
+			var zero Result
+			return zero, fmt.Errorf("%s: %w", createErrContext, err)
+		}
+
+		return run(w, files, func(stage string, processed, total int) {
+			progress.EmitStage(onProgress, stage, processed, total)
+		}), nil
+	}
 }
 
 func unzipExecutor(dryRun bool, onProgress ProgressCallback) func(rootDir string, validator *safepath.Validator, files []collector.FileInfo) (unzipper.Result, error) {
-	return func(_ string, validator *safepath.Validator, files []collector.FileInfo) (unzipper.Result, error) {
-		u, err := unzipper.NewWithValidator(validator, dryRun)
+	return func(rootDir string, validator *safepath.Validator, files []collector.FileInfo) (unzipper.Result, error) {
+		trasher, err := initTrasher(rootDir, validator, "unzip")
+		if err != nil {
+			return unzipper.Result{}, fmt.Errorf("failed to initialize trash: %w", err)
+		}
+
+		u, err := unzipper.NewWithValidator(validator, dryRun, trasher)
 		if err != nil {
 			return unzipper.Result{}, fmt.Errorf("failed to create unzipper: %w", err)
 		}
@@ -448,55 +490,23 @@ func simpleExecutor[Worker any, Result any](
 	}
 }
 
-func executeWorkerWorkflow[Worker any, Result any](
-	validator *safepath.Validator,
-	dryRun bool,
-	workers int,
-	files []collector.FileInfo,
-	onProgress ProgressCallback,
-	newWorker func(*safepath.Validator, bool, int) (Worker, error),
-	createErrContext string,
-	run func(worker Worker, files []collector.FileInfo, progress func(stage string, processed, total int)) Result,
-) (Result, error) {
-	worker, err := newWorker(validator, dryRun, workers)
+// initTrasher creates a metadata directory and trasher for a command run.
+// In dry-run mode this still initializes the trasher; the domain packages
+// skip mutations themselves when dryRun is true.
+func initTrasher(rootDir string, validator *safepath.Validator, command string) (*trash.Trasher, error) {
+	metaDir, err := metadata.Init(rootDir, validator)
 	if err != nil {
-		var zero Result
-		return zero, fmt.Errorf("%s: %w", createErrContext, err)
+		return nil, fmt.Errorf("initialize metadata: %w", err)
 	}
 
-	return run(worker, files, func(stage string, processed, total int) {
-		progress.EmitStage(onProgress, stage, processed, total)
-	}), nil
-}
+	runID := metaDir.RunID(command)
 
-func workerExecutor[Worker any, Result any](
-	dryRun bool,
-	workers int,
-	onProgress ProgressCallback,
-	newWorker func(*safepath.Validator, bool, int) (Worker, error),
-	createErrContext string,
-	run func(worker Worker, files []collector.FileInfo, progress func(stage string, processed, total int)) Result,
-) func(rootDir string, validator *safepath.Validator, files []collector.FileInfo) (Result, error) {
-	return func(_ string, validator *safepath.Validator, files []collector.FileInfo) (Result, error) {
-		return executeWorkerWorkflow(
-			validator,
-			dryRun,
-			workers,
-			files,
-			onProgress,
-			newWorker,
-			createErrContext,
-			run,
-		)
+	trasher, err := trash.New(metaDir, runID, validator)
+	if err != nil {
+		return nil, fmt.Errorf("initialize trasher: %w", err)
 	}
-}
 
-func runFlattenWorker(worker *flattener.Flattener, files []collector.FileInfo, onProgress func(stage string, processed, total int)) flattener.Result {
-	return worker.FlattenFilesWithProgress(files, onProgress)
-}
-
-func runDuplicateWorker(worker *deduplicator.Deduplicator, files []collector.FileInfo, onProgress func(stage string, processed, total int)) deduplicator.Result {
-	return worker.FindDuplicatesWithProgress(files, onProgress)
+	return trasher, nil
 }
 
 func (s *Service) skipFileList() []string {

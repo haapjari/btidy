@@ -59,6 +59,21 @@ func (t *Trasher) Trash(path string) error {
 	return os.Rename(path, dest)
 }
 
+// TrashWithDest moves a file to trash and returns the trash destination path.
+// This is a convenience method combining TrashPath and Trash in a single call.
+func (t *Trasher) TrashWithDest(path string) (string, error) {
+	dest, err := t.trashDest(path)
+	if err != nil {
+		return "", err
+	}
+
+	if err := t.Trash(path); err != nil {
+		return "", err
+	}
+
+	return dest, nil
+}
+
 // TrashPath returns the trash destination for a file without moving it.
 func (t *Trasher) TrashPath(path string) (string, error) {
 	return t.trashDest(path)

@@ -11,7 +11,9 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"btidy/pkg/collector"
+	"btidy/pkg/metadata"
 	"btidy/pkg/safepath"
+	"btidy/pkg/trash"
 )
 
 type zipFixtureEntry struct {
@@ -291,6 +293,61 @@ func TestUnzipper_ExtractArchives_UnsafeSymlinkArchiveBlocked(t *testing.T) {
 
 	_, err = os.Stat(filepath.Join(tmpDir, "outside.txt"))
 	assert.True(t, os.IsNotExist(err), "outside archive must not be extracted")
+}
+
+// Test that archives are trashed (not permanently deleted) when a trasher is provided.
+func TestUnzipper_ExtractArchives_TrashesArchiveWhenTrasherProvided(t *testing.T) {
+	t.Parallel()
+
+	tmpDir := t.TempDir()
+	archivePath := filepath.Join(tmpDir, "photos.zip")
+	writeZipArchive(t, archivePath, []zipFixtureEntry{
+		{name: "photo.jpg", content: []byte("photo-data")},
+	})
+
+	v, err := safepath.New(tmpDir)
+	require.NoError(t, err)
+
+	metaDir, err := metadata.Init(tmpDir, v)
+	require.NoError(t, err)
+
+	runID := metaDir.RunID("unzip")
+	trasher, err := trash.New(metaDir, runID, v)
+	require.NoError(t, err)
+
+	u, err := NewWithValidator(v, false, trasher)
+	require.NoError(t, err)
+
+	files := collectFiles(t, tmpDir)
+	// Filter out .btidy directory files.
+	var archiveFiles []collector.FileInfo
+	for _, f := range files {
+		if filepath.Ext(f.Name) == ".zip" {
+			archiveFiles = append(archiveFiles, f)
+		}
+	}
+	require.Len(t, archiveFiles, 1)
+
+	result := u.ExtractArchives(archiveFiles)
+
+	assert.Equal(t, 1, result.ArchivesFound)
+	assert.Equal(t, 1, result.ExtractedArchives)
+	assert.Equal(t, 1, result.DeletedArchives)
+	assert.Equal(t, 0, result.ErrorCount)
+
+	// Archive should be gone from original location.
+	assert.NoFileExists(t, archivePath)
+
+	// Extracted file should exist.
+	assert.FileExists(t, filepath.Join(tmpDir, "photo.jpg"))
+
+	// The operation should have a populated TrashedTo field.
+	require.Len(t, result.Operations, 1)
+	assert.NotEmpty(t, result.Operations[0].TrashedTo, "TrashedTo should be populated")
+	assert.Contains(t, result.Operations[0].TrashedTo, ".btidy/trash/")
+
+	// The trashed archive should exist at the trash destination.
+	assert.FileExists(t, result.Operations[0].TrashedTo)
 }
 
 func TestUnzipper_ExtractArchives_ReportsProgress(t *testing.T) {

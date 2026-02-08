@@ -610,7 +610,7 @@ func TestEndToEndPipeline_ManifestIntegrity(t *testing.T) {
 		t.Fatalf("failed to read target directory: %v", err)
 	}
 	for _, entry := range entries {
-		if entry.IsDir() {
+		if entry.IsDir() && entry.Name() != ".btidy" {
 			t.Fatalf("expected no subdirectories after flatten: %s", entry.Name())
 		}
 	}

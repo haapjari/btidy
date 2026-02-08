@@ -12,7 +12,9 @@ import (
 
 	"btidy/internal/testutil"
 	"btidy/pkg/collector"
+	"btidy/pkg/metadata"
 	"btidy/pkg/safepath"
+	"btidy/pkg/trash"
 )
 
 func createTestFile(t *testing.T, path, content string, modTime time.Time) {
@@ -347,6 +349,59 @@ func TestFlattener_FlattenFiles_DuplicatePreservedWhenKeptFileDisappears(t *test
 
 	// The duplicate should still exist on disk.
 	assert.FileExists(t, dupeFile)
+}
+
+// Test that duplicate files are trashed (not permanently deleted) when a trasher is provided.
+func TestFlattener_FlattenFiles_TrashesFilesWhenTrasherProvided(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	modTime := time.Date(2018, 6, 15, 12, 0, 0, 0, time.UTC)
+	// Same name, same content, same mtime = duplicate during flatten.
+	createTestFile(t, filepath.Join(tmpDir, "dir1", "file.txt"), "content", modTime)
+	createTestFile(t, filepath.Join(tmpDir, "dir2", "file.txt"), "content", modTime)
+
+	v, err := safepath.New(tmpDir)
+	require.NoError(t, err)
+
+	metaDir, err := metadata.Init(tmpDir, v)
+	require.NoError(t, err)
+
+	runID := metaDir.RunID("flatten")
+	trasher, err := trash.New(metaDir, runID, v)
+	require.NoError(t, err)
+
+	f, err := NewWithValidator(v, false, 1, trasher)
+	require.NoError(t, err)
+
+	c := collector.New(collector.Options{SkipDirs: []string{".btidy"}})
+	files, err := c.Collect(tmpDir)
+	require.NoError(t, err)
+	require.Len(t, files, 2)
+
+	result := f.FlattenFiles(files)
+
+	assert.Equal(t, 2, result.TotalFiles)
+	assert.Equal(t, 1, result.MovedCount)
+	assert.Equal(t, 1, result.DuplicatesCount)
+	assert.Equal(t, 0, result.ErrorCount)
+
+	// One file should exist in root.
+	assert.FileExists(t, filepath.Join(tmpDir, "file.txt"))
+
+	// Find the duplicate operation.
+	var dupOp *MoveOperation
+	for i := range result.Operations {
+		if result.Operations[i].Duplicate {
+			dupOp = &result.Operations[i]
+			break
+		}
+	}
+	require.NotNil(t, dupOp, "should have a duplicate operation")
+	assert.NotEmpty(t, dupOp.TrashedTo, "TrashedTo should be populated")
+	assert.Contains(t, dupOp.TrashedTo, ".btidy/trash/")
+
+	// The trashed file should exist at the trash destination.
+	assert.FileExists(t, dupOp.TrashedTo)
 }
 
 func TestFlattener_FlattenFiles_UnsafeSymlinkFailsBeforeMutations(t *testing.T) {

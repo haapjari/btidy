@@ -13,7 +13,9 @@ import (
 	"btidy/internal/testutil"
 	"btidy/pkg/collector"
 	"btidy/pkg/hasher"
+	"btidy/pkg/metadata"
 	"btidy/pkg/safepath"
+	"btidy/pkg/trash"
 )
 
 func setupTestDir(t *testing.T) string {
@@ -714,7 +716,7 @@ func TestDeduplicator_DeleteFile_RefusesWhenKeptFileMissing(t *testing.T) {
 	v, err := safepath.New(tmpDir)
 	require.NoError(t, err)
 
-	d, err := NewWithValidator(v, false, 1)
+	d, err := NewWithValidator(v, false, 1, nil)
 	require.NoError(t, err)
 
 	dupFile := collector.FileInfo{
@@ -767,4 +769,55 @@ func TestDeduplicator_FindDuplicates_UnsafeSymlinkFailsBeforeDeletes(t *testing.
 
 	assert.FileExists(t, filepath.Join(tmpDir, "a.txt"))
 	assert.FileExists(t, filepath.Join(tmpDir, "b.txt"))
+}
+
+// Test that duplicates are trashed (not permanently deleted) when a trasher is provided.
+func TestDeduplicator_FindDuplicates_TrashesFilesWhenTrasherProvided(t *testing.T) {
+	tmpDir := setupTestDir(t)
+	defer os.RemoveAll(tmpDir)
+
+	modTime := time.Date(2018, 6, 15, 12, 0, 0, 0, time.UTC)
+	content := "identical content for trash test"
+
+	createTestFile(t, filepath.Join(tmpDir, "keep.txt"), content, modTime)
+	createTestFile(t, filepath.Join(tmpDir, "zzz_duplicate.txt"), content, modTime)
+
+	v, err := safepath.New(tmpDir)
+	require.NoError(t, err)
+
+	metaDir, err := metadata.Init(tmpDir, v)
+	require.NoError(t, err)
+
+	runID := metaDir.RunID("duplicate")
+	trasher, err := trash.New(metaDir, runID, v)
+	require.NoError(t, err)
+
+	d, err := NewWithValidator(v, false, 1, trasher)
+	require.NoError(t, err)
+
+	c := collector.New(collector.Options{SkipDirs: []string{".btidy"}})
+	files, err := c.Collect(tmpDir)
+	require.NoError(t, err)
+	require.Len(t, files, 2)
+
+	result := d.FindDuplicates(files)
+
+	assert.Equal(t, 2, result.TotalFiles)
+	assert.Equal(t, 1, result.DuplicatesFound)
+	assert.Equal(t, 1, result.DeletedCount)
+	assert.Equal(t, 0, result.ErrorCount)
+
+	// The kept file (alphabetically first) should remain.
+	assert.FileExists(t, filepath.Join(tmpDir, "keep.txt"))
+
+	// The duplicate should be gone from original location.
+	assert.NoFileExists(t, filepath.Join(tmpDir, "zzz_duplicate.txt"))
+
+	// The operation should have a populated TrashedTo field.
+	require.Len(t, result.Operations, 1)
+	assert.NotEmpty(t, result.Operations[0].TrashedTo, "TrashedTo should be populated")
+	assert.Contains(t, result.Operations[0].TrashedTo, ".btidy/trash/")
+
+	// The trashed file should exist at the trash destination.
+	assert.FileExists(t, result.Operations[0].TrashedTo)
 }

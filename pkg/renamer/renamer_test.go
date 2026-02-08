@@ -11,7 +11,9 @@ import (
 
 	"btidy/internal/testutil"
 	"btidy/pkg/collector"
+	"btidy/pkg/metadata"
 	"btidy/pkg/safepath"
+	"btidy/pkg/trash"
 )
 
 // createTestFile creates a file with specific modification time.
@@ -478,6 +480,57 @@ func TestNew_InvalidRoot(t *testing.T) {
 	assert.Error(t, err)
 }
 
+// Test that duplicate files are trashed (not permanently deleted) when a trasher is provided.
+func TestRenamer_RenameFiles_TrashesFilesWhenTrasherProvided(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	modTime := time.Date(2018, 6, 15, 12, 0, 0, 0, time.UTC)
+	// Two files with identical content that sanitize to the same name = duplicate in rename.
+	createTestFileWithContent(t, tmpDir, "Report.pdf", "same-content", modTime)
+	createTestFileWithContent(t, tmpDir, "report.pdf", "same-content", modTime)
+
+	v, err := safepath.New(tmpDir)
+	require.NoError(t, err)
+
+	metaDir, err := metadata.Init(tmpDir, v)
+	require.NoError(t, err)
+
+	runID := metaDir.RunID("rename")
+	trasher, err := trash.New(metaDir, runID, v)
+	require.NoError(t, err)
+
+	r, err := NewWithValidator(v, false, trasher)
+	require.NoError(t, err)
+
+	files := collectFiles(t, tmpDir)
+	require.Len(t, files, 2)
+
+	result := r.RenameFiles(files)
+
+	assert.Equal(t, 2, result.TotalFiles)
+	assert.Equal(t, 1, result.RenamedCount)
+	assert.Equal(t, 1, result.DeletedCount)
+	assert.Equal(t, 0, result.ErrorCount)
+
+	// Renamed file should exist.
+	assert.FileExists(t, filepath.Join(tmpDir, "2018-06-15_report.pdf"))
+
+	// Find the deleted operation.
+	var deletedOp *RenameOperation
+	for i := range result.Operations {
+		if result.Operations[i].Deleted {
+			deletedOp = &result.Operations[i]
+			break
+		}
+	}
+	require.NotNil(t, deletedOp, "should have a deleted operation")
+	assert.NotEmpty(t, deletedOp.TrashedTo, "TrashedTo should be populated")
+	assert.Contains(t, deletedOp.TrashedTo, ".btidy/trash/")
+
+	// The trashed file should exist at the trash destination.
+	assert.FileExists(t, deletedOp.TrashedTo)
+}
+
 // Test that a file modified between initial hash and deletion is NOT deleted.
 func TestRenamer_RenameFiles_RefusesDeleteWhenContentChanged(t *testing.T) {
 	tmpDir := t.TempDir()
@@ -501,7 +554,7 @@ func TestRenamer_RenameFiles_RefusesDeleteWhenContentChanged(t *testing.T) {
 	v, err := safepath.New(tmpDir)
 	require.NoError(t, err)
 
-	r, err := NewWithValidator(v, false)
+	r, err := NewWithValidator(v, false, nil)
 	require.NoError(t, err)
 
 	secondFile := files[1]
@@ -532,7 +585,7 @@ func TestRenamer_RenameFiles_RefusesDeleteWhenKeptFileMissing(t *testing.T) {
 	v, err := safepath.New(tmpDir)
 	require.NoError(t, err)
 
-	r, err := NewWithValidator(v, false)
+	r, err := NewWithValidator(v, false, nil)
 	require.NoError(t, err)
 
 	dupPath := filepath.Join(tmpDir, "report.pdf")
@@ -587,7 +640,7 @@ func TestRenamer_RenameFiles_RefusesDeleteWhenTargetDisappears(t *testing.T) {
 	v, err := safepath.New(tmpDir)
 	require.NoError(t, err)
 
-	r, err := NewWithValidator(v, false)
+	r, err := NewWithValidator(v, false, nil)
 	require.NoError(t, err)
 
 	// Manually construct the file info for just the source file, which will
