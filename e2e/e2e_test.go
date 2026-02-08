@@ -1087,7 +1087,7 @@ func TestEndToEndPurge_PurgesAfterDuplicate(t *testing.T) {
 	}
 
 	// Actually purge.
-	purgeResult := runBinary(t, binPath, "purge", "--all", root)
+	purgeResult := runBinary(t, binPath, "purge", "--all", "--force", root)
 	assertCommandSucceeded(t, "purge all", purgeResult)
 
 	if !strings.Contains(purgeResult.stdout, "Purged:    1 run(s)") {
@@ -1123,8 +1123,8 @@ func TestEndToEndPurge_NoTrash(t *testing.T) {
 
 	writeFile(t, filepath.Join(root, "file.txt"), "content", modTime)
 
-	// Purge --all with no trash should succeed with empty output.
-	result := runBinary(t, binPath, "purge", "--all", root)
+	// Purge --all --force with no trash should succeed with empty output.
+	result := runBinary(t, binPath, "purge", "--all", "--force", root)
 	assertCommandSucceeded(t, "purge no trash", result)
 
 	if !strings.Contains(result.stdout, "No trash runs found") {
@@ -1160,5 +1160,47 @@ func TestEndToEndPurge_OlderThanFilter(t *testing.T) {
 	}
 	if len(trashEntries) == 0 {
 		t.Fatal("trash should still exist after older-than filter")
+	}
+}
+
+func TestEndToEndPurge_AllRequiresForce(t *testing.T) {
+	binPath := binaryPath(t)
+	root := t.TempDir()
+	modTime := time.Date(2024, 8, 5, 10, 0, 0, 0, time.UTC)
+
+	writeFile(t, filepath.Join(root, "a.txt"), "same-content", modTime)
+	writeFile(t, filepath.Join(root, "b.txt"), "same-content", modTime)
+
+	// Create some trash.
+	dupResult := runBinary(t, binPath, "--workers", "1", "--no-snapshot", "duplicate", root)
+	assertCommandSucceeded(t, "duplicate", dupResult)
+
+	// Purge --all without --force should fail.
+	result := runBinary(t, binPath, "purge", "--all", root)
+	assertCommandFailed(t, result, "--all requires --force")
+
+	// Verify trash still exists.
+	trashRoot := filepath.Join(root, ".btidy", "trash")
+	assertExists(t, trashRoot)
+}
+
+func TestEndToEndPurge_AllDryRunNoForce(t *testing.T) {
+	binPath := binaryPath(t)
+	root := t.TempDir()
+	modTime := time.Date(2024, 8, 6, 10, 0, 0, 0, time.UTC)
+
+	writeFile(t, filepath.Join(root, "a.txt"), "same-content", modTime)
+	writeFile(t, filepath.Join(root, "b.txt"), "same-content", modTime)
+
+	// Create some trash.
+	dupResult := runBinary(t, binPath, "--workers", "1", "--no-snapshot", "duplicate", root)
+	assertCommandSucceeded(t, "duplicate", dupResult)
+
+	// Purge --all --dry-run should work without --force.
+	result := runBinary(t, binPath, "purge", "--all", "--dry-run", root)
+	assertCommandSucceeded(t, "purge all dry-run", result)
+
+	if !strings.Contains(result.stdout, "WOULD PURGE") {
+		t.Fatalf("expected 'WOULD PURGE' in output\n%s", result.stdout)
 	}
 }

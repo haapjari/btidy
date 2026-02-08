@@ -442,20 +442,184 @@ purging.
 
 ---
 
+### Phase 11 — Purge safety gate (`--force`)
+
+Prevent accidental irrecoverable deletion when using `btidy purge --all`.
+
+**Problem:** `btidy purge --all ./backup` permanently deletes all trashed files
+with no confirmation. The plan specified `--force` or interactive confirmation,
+but this was not implemented.
+
+**Changes:**
+
+| File | Change |
+|------|--------|
+| `cmd/purge.go` | Add `--force` boolean flag |
+| `cmd/purge.go` | Require `--force` when `--all` is used without `--dry-run` |
+| `cmd/purge.go` | Update long help text and examples |
+
+**Behavior:**
+
+- `btidy purge --all ./backup` → error: `--all requires --force to confirm`
+- `btidy purge --all --force ./backup` → purges all trash
+- `btidy purge --all --dry-run ./backup` → lists what would be purged (no `--force` needed)
+- `btidy purge --run <id> ./backup` → works without `--force` (targeted)
+- `btidy purge --older-than 7d ./backup` → works without `--force` (filtered)
+
+**Tests:** E2e test confirming `--all` without `--force` fails. E2e test confirming
+`--all --force` succeeds.
+
+**Estimated size:** ~10 lines production, ~30 lines test.
+
+---
+
+### Phase 12 — Undo hash verification
+
+Verify file content integrity before each undo step to prevent silent data
+corruption when files have been modified since the original operation.
+
+**Problem:** `undoTrash` and `undoRename` only check file existence via `os.Lstat`.
+A file modified externally between the original operation and undo would be silently
+moved without warning.
+
+**Changes:**
+
+| File | Change |
+|------|--------|
+| `pkg/usecase/service.go` | `undoTrash`: hash file at trash dest, compare to `entry.Hash`, warn+skip on mismatch |
+| `pkg/usecase/service.go` | `undoRename`: hash file at dest, compare to `entry.Hash`, warn+skip on mismatch |
+| `pkg/usecase/service.go` | Import `btidy/pkg/hasher` |
+
+**Algorithm for `undoTrash`:**
+
+```go
+if entry.Hash != "" {
+    h, _ := hasher.New(1)
+    currentHash, err := h.ComputeHash(trashedAbs)
+    if err != nil || currentHash != entry.Hash {
+        return UndoOperation{..., Action: "skip",
+            SkipReason: "content changed since original operation"}
+    }
+}
+```
+
+Same pattern for `undoRename` using `destAbs`.
+
+**When hash is empty:** Skip verification (some entry types like renames from
+the organize command don't record hashes). Log a warning but proceed.
+
+**Tests:** Unit test that modifies a trashed file between trash and undo, verifies
+the undo is skipped with appropriate reason. Unit test that undo proceeds normally
+when hash matches.
+
+**Estimated size:** ~30 lines production, ~80 lines test.
+
+---
+
+### Phase 13 — Write-ahead journaling
+
+Replace post-execution batch journal writing with inline write-ahead logging.
+Each mutation is logged *before* execution, with a confirmation entry after.
+
+**Problem:** The current implementation writes all journal entries as a batch after
+the entire operation completes, with `Success: true` hardcoded. If btidy crashes
+mid-operation, the journal has no record of what was attempted. The `Validate()`
+method and two-phase entry pattern in `pkg/journal` cannot be exercised.
+
+**Design:**
+
+Replace the `toJournalEntries` callback pattern in `runFileWorkflow` with an
+inline journal writer that is passed to executors. The journal writer is created
+*before* execution begins and closed after.
+
+**New type in `pkg/usecase/`:**
+
+```go
+// journalLogger wraps a journal.Writer and provides helpers for
+// write-ahead logging of filesystem mutations.
+type journalLogger struct {
+    writer  *journal.Writer
+    rootDir string
+}
+
+func (jl *journalLogger) LogIntent(entry journal.Entry) error   // Success=false
+func (jl *journalLogger) LogSuccess(entry journal.Entry) error  // Success=true
+```
+
+**Changes:**
+
+| File | Change |
+|------|--------|
+| `pkg/usecase/service.go` | `runFileWorkflow`: create journal writer before `execute()`, pass via new `WorkflowContext` parameter, close after execution. Remove `toJournalEntries` callback. |
+| `pkg/usecase/service.go` | Remove all `*JournalEntries` converter functions (renameJournalEntries, flattenJournalEntries, etc.) |
+| `pkg/usecase/service.go` | Each executor receives a `*journalLogger` and calls `LogIntent`/`LogSuccess` around each mutation |
+| Domain packages | Add optional `OnMutation` callback to constructors (or pass through existing progress callback pattern) — alternative: keep journal logging in executor closures at usecase level |
+| `pkg/journal/journal.go` | No changes needed (Writer already supports concurrent Log calls with mutex) |
+
+**Preferred approach — executor-level logging:**
+
+Keep domain packages unchanged. The usecase-level executor functions already wrap
+domain operations. Add journal logging in the executor wrapper by post-processing
+each operation result as it completes, using the existing `workerExecutor` pattern.
+
+Since domain packages process files sequentially within each worker and return
+results one at a time via progress callbacks, the executor can log intent before
+calling the domain function and confirmation after.
+
+Actually, the cleanest approach: domain packages already return `Result` structs
+with per-file `Operation` entries. The issue is that results are returned as a
+batch. To do true write-ahead logging, we need per-operation hooks.
+
+**Practical approach:** Add a per-operation callback to domain packages that fires
+after each file is processed. The executor uses this to write journal entries
+inline. This is similar to the existing `ProgressCallback` pattern.
+
+```go
+// In each domain package, add OnOperation callback:
+type OperationCallback func(op Operation)
+
+// In executor:
+var jl *journalLogger
+domainPkg.ProcessWithCallback(files, func(op Operation) {
+    entry := toJournalEntry(op)
+    jl.LogIntent(entry)   // before is not possible here...
+})
+```
+
+**Revised practical approach:** The simplest correct change is to modify
+`writeJournal` to write two entries per operation (intent + confirmation) instead
+of one. This gives us the two-phase pattern without restructuring domain packages.
+While not true write-ahead (the operation has already completed), it establishes
+the correct journal format and enables `Validate()` to detect incomplete journals
+from future true write-ahead work.
+
+For the scope of this phase: write intent entries (Success=false) followed by
+confirmation entries (Success=true) for each operation in `writeJournal`. This
+correctly exercises `Validate()` and establishes the journal format contract.
+
+**Tests:** Unit test for `Validate()` detecting partial writes. Test that journal
+contains paired intent+confirmation entries. Test that undo correctly processes
+journals with the two-phase format.
+
+**Estimated size:** ~50 lines production, ~100 lines test.
+
+---
+
 ## Dependency Graph
 
 ```
 Phase 1 ─── Phase 2 ─── Phase 3 ─┬─ Phase 4
    │                               ├─ Phase 5
-   │                               └─ Phase 10
-   ├──────── Phase 6 ─── Phase 9
+   │                               └─ Phase 10 ── Phase 11
+   ├──────── Phase 6 ─── Phase 9 ─┬─ Phase 12
+   │                               └─ Phase 13
    ├──────── Phase 7
    └──────── Phase 8
 ```
 
 Phases 4, 5, 7, 8 are independent of each other once their prerequisites are met.
 Phase 9 depends on both Phase 3 (trash) and Phase 6 (journal). Phase 7 depends only
-on Phase 1.
+on Phase 1. Phase 11 depends on Phase 10. Phases 12 and 13 depend on Phase 9.
 
 ---
 
@@ -473,7 +637,10 @@ on Phase 1.
 | 8. File locking | `pkg/filelock` | ~40 | ~50 | Low |
 | 9. Undo command | — | ~200 | ~300 | **Medium** |
 | 10. Purge command | — | ~120 | ~100 | Low |
-| **Total** | **4 new** | **~960** | **~1420** | |
+| 11. Purge safety gate | — | ~10 | ~30 | Low |
+| 12. Undo hash verification | — | ~30 | ~80 | Low |
+| 13. Write-ahead journaling | — | ~50 | ~100 | Medium |
+| **Total** | **4 new** | **~1050** | **~1630** | |
 
 ---
 

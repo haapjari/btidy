@@ -14,6 +14,7 @@ var (
 	purgeRunID    string
 	purgeOlderStr string
 	purgeAll      bool
+	purgeForce    bool
 )
 
 func buildPurgeCommand() *cobra.Command {
@@ -24,17 +25,19 @@ func buildPurgeCommand() *cobra.Command {
 
 This is the only btidy command that irrecoverably deletes data.
 At least one filter flag is required unless --dry-run is used alone.
+Using --all requires --force to confirm.
 
 Flags:
   --run <run-id>      Purge a specific run's trash
   --older-than <dur>  Only purge runs older than the given duration (e.g. 7d, 24h)
-  --all               Purge all trash runs
+  --all               Purge all trash runs (requires --force)
+  --force             Confirm destructive --all purge
 
 Examples:
   btidy purge --dry-run ./backup           # List all trash runs with sizes
   btidy purge --older-than 7d ./backup     # Purge trash older than 7 days
   btidy purge --run <run-id> ./backup      # Purge a specific run's trash
-  btidy purge --all ./backup               # Purge all trash`,
+  btidy purge --all --force ./backup       # Purge all trash`,
 		Args: cobra.ExactArgs(1),
 		RunE: runPurge,
 	}
@@ -42,6 +45,7 @@ Examples:
 	cmd.Flags().StringVar(&purgeRunID, "run", "", "Purge a specific run's trash by run ID")
 	cmd.Flags().StringVar(&purgeOlderStr, "older-than", "", "Only purge runs older than this duration (e.g. 7d, 24h, 1h30m)")
 	cmd.Flags().BoolVar(&purgeAll, "all", false, "Purge all trash runs")
+	cmd.Flags().BoolVar(&purgeForce, "force", false, "Confirm destructive --all purge")
 
 	return cmd
 }
@@ -55,6 +59,11 @@ func runPurge(_ *cobra.Command, args []string) error {
 	// Require at least one filter unless in dry-run mode (listing).
 	if purgeRunID == "" && !purgeAll && olderThan == 0 && !dryRun {
 		return errors.New("at least one of --run, --older-than, or --all is required (use --dry-run to list trash)")
+	}
+
+	// Require --force when using --all outside of dry-run mode.
+	if purgeAll && !purgeForce && !dryRun {
+		return errors.New("--all requires --force to confirm (this permanently deletes all trashed files)")
 	}
 
 	printDryRunBanner()
