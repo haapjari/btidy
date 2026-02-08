@@ -40,17 +40,16 @@ After:
 }
 
 func runFlatten(_ *cobra.Command, args []string) error {
-	execution, empty, err := runFileCommand(
+	execution, empty, err := runWorkersFileCommand(
 		"FLATTEN",
 		true,
-		func(progress *progressReporter) (usecase.FlattenExecution, error) {
+		args[0],
+		func(targetDir string, isDryRun bool, workerCount int, onProgress usecase.ProgressCallback) (usecase.FlattenExecution, error) {
 			return newUseCaseService().RunFlatten(usecase.FlattenRequest{
-				TargetDir: args[0],
-				DryRun:    dryRun,
-				Workers:   workers,
-				OnProgress: func(stage string, processed, total int) {
-					progress.Report(stage, processed, total)
-				},
+				TargetDir:  targetDir,
+				DryRun:     isDryRun,
+				Workers:    workerCount,
+				OnProgress: onProgress,
 			})
 		},
 		func(execution usecase.FlattenExecution) fileCommandExecutionInfo {
@@ -59,9 +58,6 @@ func runFlatten(_ *cobra.Command, args []string) error {
 				fileCount:       execution.FileCount,
 				collectDuration: execution.CollectDuration,
 			}
-		},
-		func() {
-			fmt.Printf("Workers: %d\n", workers)
 		},
 	)
 	if err != nil {

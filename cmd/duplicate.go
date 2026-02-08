@@ -34,17 +34,16 @@ Use --dry-run first to review what would be deleted!`,
 }
 
 func runDuplicate(_ *cobra.Command, args []string) error {
-	execution, empty, err := runFileCommand(
+	execution, empty, err := runWorkersFileCommand(
 		"DUPLICATE",
 		false,
-		func(progress *progressReporter) (usecase.DuplicateExecution, error) {
+		args[0],
+		func(targetDir string, isDryRun bool, workerCount int, onProgress usecase.ProgressCallback) (usecase.DuplicateExecution, error) {
 			return newUseCaseService().RunDuplicate(usecase.DuplicateRequest{
-				TargetDir: args[0],
-				DryRun:    dryRun,
-				Workers:   workers,
-				OnProgress: func(stage string, processed, total int) {
-					progress.Report(stage, processed, total)
-				},
+				TargetDir:  targetDir,
+				DryRun:     isDryRun,
+				Workers:    workerCount,
+				OnProgress: onProgress,
 			})
 		},
 		func(execution usecase.DuplicateExecution) fileCommandExecutionInfo {
@@ -53,9 +52,6 @@ func runDuplicate(_ *cobra.Command, args []string) error {
 				fileCount:       execution.FileCount,
 				collectDuration: execution.CollectDuration,
 			}
-		},
-		func() {
-			fmt.Printf("Workers: %d\n", workers)
 		},
 	)
 	if err != nil {

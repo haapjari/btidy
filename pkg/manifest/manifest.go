@@ -5,6 +5,7 @@ package manifest
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -63,7 +64,7 @@ func NewGenerator(rootDir string, workers int) (*Generator, error) {
 // path validator.
 func NewGeneratorWithValidator(validator *safepath.Validator, workers int) (*Generator, error) {
 	if validator == nil {
-		return nil, fmt.Errorf("validator is required")
+		return nil, errors.New("validator is required")
 	}
 
 	opts := []hasher.Option{}

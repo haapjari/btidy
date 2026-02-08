@@ -15,16 +15,23 @@ var (
 func buildRootCommand() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "btidy",
-		Short: "Organize backup files by renaming and flattening directory structures",
+		Short: "Organize backup files by unzipping, renaming, and flattening directory structures",
 		Long: `btidy helps clean up backup directories.
 
 Commands:
+	  unzip      Extracts zip archives recursively and removes extracted archives
   rename     Renames files in place with consistent naming
   flatten    Moves all files to root directory, removes duplicates by content hash
   duplicate  Finds and removes duplicate files by content hash
   manifest   Creates a cryptographic inventory of all files
 
-Examples:
+	Examples:
+	  # Extract archives recursively first (recommended)
+	  btidy unzip --dry-run /path/to/backup/2018
+
+	  # Extract archives and remove the source zip files
+	  btidy unzip /path/to/backup/2018
+
   # Preview what rename would do (recommended first step)
 	  btidy rename --dry-run /path/to/backup/2018
 
@@ -37,7 +44,8 @@ Examples:
   # Flatten directory structure (move all to root, remove duplicates by content hash)
 	  btidy flatten /path/to/backup/2018
 
-  # Typical workflow: first rename, then flatten, then deduplicate
+	  # Typical workflow: unzip, rename, flatten, deduplicate
+	  btidy unzip /path/to/backup/2018
 	  btidy rename /path/to/backup/2018
 	  btidy flatten /path/to/backup/2018
 	  btidy duplicate /path/to/backup/2018

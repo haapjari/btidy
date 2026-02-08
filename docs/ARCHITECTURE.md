@@ -14,16 +14,16 @@ CLI (cmd/) | Cobra commands |
            | pkg/usecase    |
            | workflow svc   |
            +--+--+--+--+-----+
-              |  |  |  |
-              |  |  |  +------------------+
-              |  |  |                     |
-              v  v  v                     v
-          renamer flattener           deduplicator
-             |       |                     |
-             v       v                     v
-         sanitizer  hasher              hasher
-             |       |                     |
-             +---+---+---------------------+
+              |  |  |  |  |
+              |  |  |  |  +------------------+
+              |  |  |  |                     |
+              v  v  v  v                     v
+          unzipper renamer flattener     deduplicator
+              |      |       |               |
+              v      v       v               v
+         archive/zip sanitizer hasher      hasher
+                     |       |               |
+                     +---+---+---------------+
                  |
                  v
               safepath
@@ -37,13 +37,14 @@ CLI (cmd/) | Cobra commands |
 ## Phase pipeline
 
 ```
-Collect -> Rename -> Flatten -> Duplicate
+Collect -> Unzip -> Rename -> Flatten -> Duplicate
               \-> Manifest (before/after)
 ```
 
 ## Phase flows (short)
 
 ```
+Unzip:     Collect -> Find .zip -> Safe extract -> Recursive nested extract -> SafeRemove archive
 Rename:    Collect -> Sanitize name -> SafeRename
 Flatten:   Collect -> Hash (SHA256) -> SafeRename or SafeRemove
 Duplicate: Collect -> Size group -> Partial hash -> Full hash -> SafeRemove
@@ -85,6 +86,7 @@ Result:
 
 ```
 CLI examples:
+  btidy unzip /backup
   btidy rename --dry-run /backup
   btidy flatten /backup
   btidy duplicate --workers 8 /backup

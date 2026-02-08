@@ -1,6 +1,8 @@
 package usecase
 
 import (
+	"archive/zip"
+	"bytes"
 	"os"
 	"path/filepath"
 	"testing"
@@ -11,6 +13,50 @@ import (
 
 	"btidy/internal/testutil"
 )
+
+type zipFixtureEntry struct {
+	name    string
+	content []byte
+}
+
+func writeZipArchive(t *testing.T, archivePath string, entries []zipFixtureEntry) {
+	t.Helper()
+
+	require.NoError(t, os.MkdirAll(filepath.Dir(archivePath), 0o755))
+
+	file, err := os.Create(archivePath)
+	require.NoError(t, err)
+
+	writer := zip.NewWriter(file)
+	for _, entry := range entries {
+		entryWriter, err := writer.Create(entry.name)
+		require.NoError(t, err)
+
+		_, err = entryWriter.Write(entry.content)
+		require.NoError(t, err)
+	}
+
+	require.NoError(t, writer.Close())
+	require.NoError(t, file.Close())
+}
+
+func zipBytes(t *testing.T, entries []zipFixtureEntry) []byte {
+	t.Helper()
+
+	var buffer bytes.Buffer
+	writer := zip.NewWriter(&buffer)
+	for _, entry := range entries {
+		entryWriter, err := writer.Create(entry.name)
+		require.NoError(t, err)
+
+		_, err = entryWriter.Write(entry.content)
+		require.NoError(t, err)
+	}
+
+	require.NoError(t, writer.Close())
+
+	return buffer.Bytes()
+}
 
 func TestService_RunRename_DryRun(t *testing.T) {
 	t.Parallel()
@@ -203,4 +249,90 @@ func TestService_RunManifest_OutputOutsideTargetRejected(t *testing.T) {
 
 	_, statErr := os.Stat(outsideOutputPath)
 	assert.True(t, os.IsNotExist(statErr))
+}
+
+func TestService_RunUnzip_DryRun(t *testing.T) {
+	t.Parallel()
+
+	tmpDir := t.TempDir()
+	archivePath := filepath.Join(tmpDir, "photos.zip")
+	writeZipArchive(t, archivePath, []zipFixtureEntry{
+		{name: "nested/photo.jpg", content: []byte("photo-bytes")},
+	})
+
+	progressCalls := 0
+	lastStage := ""
+	s := New(Options{})
+	execution, err := s.RunUnzip(UnzipRequest{
+		TargetDir: tmpDir,
+		DryRun:    true,
+		OnProgress: func(stage string, _, _ int) {
+			progressCalls++
+			lastStage = stage
+		},
+	})
+	require.NoError(t, err)
+
+	assert.Equal(t, tmpDir, execution.RootDir)
+	assert.Equal(t, 1, execution.FileCount)
+	assert.Equal(t, 1, execution.Result.ArchivesFound)
+	assert.Equal(t, 1, execution.Result.ArchivesProcessed)
+	assert.Equal(t, 1, execution.Result.ExtractedArchives)
+	assert.Equal(t, 1, execution.Result.DeletedArchives)
+	assert.Equal(t, 1, execution.Result.ExtractedFiles)
+	assert.Equal(t, 0, execution.Result.ExtractedDirs)
+	assert.Equal(t, 0, execution.Result.ErrorCount)
+	assert.GreaterOrEqual(t, progressCalls, 1)
+	assert.NotEmpty(t, lastStage)
+
+	_, err = os.Stat(archivePath)
+	require.NoError(t, err, "dry-run must not remove archives")
+
+	_, err = os.Stat(filepath.Join(tmpDir, "nested", "photo.jpg"))
+	assert.True(t, os.IsNotExist(err), "dry-run must not extract files")
+}
+
+func TestService_RunUnzip_RecursiveNestedArchives(t *testing.T) {
+	t.Parallel()
+
+	tmpDir := t.TempDir()
+
+	innerArchive := zipBytes(t, []zipFixtureEntry{
+		{name: "inner/final.txt", content: []byte("payload")},
+	})
+
+	outerArchivePath := filepath.Join(tmpDir, "outer.zip")
+	writeZipArchive(t, outerArchivePath, []zipFixtureEntry{
+		{name: "nested/inner.zip", content: innerArchive},
+		{name: "outer.txt", content: []byte("outer")},
+	})
+
+	s := New(Options{})
+	execution, err := s.RunUnzip(UnzipRequest{
+		TargetDir: tmpDir,
+		DryRun:    false,
+	})
+	require.NoError(t, err)
+
+	assert.Equal(t, tmpDir, execution.RootDir)
+	assert.Equal(t, 1, execution.FileCount)
+	assert.Equal(t, 2, execution.Result.ArchivesFound)
+	assert.Equal(t, 2, execution.Result.ArchivesProcessed)
+	assert.Equal(t, 2, execution.Result.ExtractedArchives)
+	assert.Equal(t, 2, execution.Result.DeletedArchives)
+	assert.Equal(t, 3, execution.Result.ExtractedFiles)
+	assert.Equal(t, 0, execution.Result.ExtractedDirs)
+	assert.Equal(t, 0, execution.Result.ErrorCount)
+
+	_, err = os.Stat(filepath.Join(tmpDir, "outer.zip"))
+	assert.True(t, os.IsNotExist(err), "outer archive should be removed")
+
+	_, err = os.Stat(filepath.Join(tmpDir, "nested", "inner.zip"))
+	assert.True(t, os.IsNotExist(err), "nested archive should be removed")
+
+	_, err = os.Stat(filepath.Join(tmpDir, "outer.txt"))
+	require.NoError(t, err)
+
+	_, err = os.Stat(filepath.Join(tmpDir, "nested", "inner", "final.txt"))
+	require.NoError(t, err)
 }

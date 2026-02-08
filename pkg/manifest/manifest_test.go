@@ -3,7 +3,6 @@ package manifest
 import (
 	"crypto/sha256"
 	"encoding/hex"
-	"errors"
 	"os"
 	"path/filepath"
 	"testing"
@@ -203,7 +202,7 @@ func TestGenerator_Generate_UnsafeSymlinkRejected(t *testing.T) {
 
 	_, err = g.Generate(GenerateOptions{})
 	require.Error(t, err)
-	assert.True(t, errors.Is(err, safepath.ErrSymlinkEscape))
+	require.ErrorIs(t, err, safepath.ErrSymlinkEscape)
 }
 
 func TestManifest_SaveLoad_RoundTrip(t *testing.T) {

@@ -63,7 +63,7 @@ func runFileCommand[T any](
 	printDryRunBanner()
 	printCollectingFiles()
 
-	progress := startProgress("Working")
+	progress := startProgress("collecting")
 	execution, err = execute(progress)
 	progress.Stop()
 	if err != nil {
@@ -83,6 +83,33 @@ func runFileCommand[T any](
 	}
 
 	return execution, false, nil
+}
+
+func runWorkersFileCommand[T any](
+	command string,
+	trailingBlankLine bool,
+	targetDir string,
+	execute func(targetDir string, dryRun bool, workers int, onProgress usecase.ProgressCallback) (T, error),
+	executionInfo func(T) fileCommandExecutionInfo,
+) (execution T, empty bool, err error) {
+	return runFileCommand(
+		command,
+		trailingBlankLine,
+		func(progress *progressReporter) (T, error) {
+			return execute(
+				targetDir,
+				dryRun,
+				workers,
+				func(stage string, processed, total int) {
+					progress.Report(stage, processed, total)
+				},
+			)
+		},
+		executionInfo,
+		func() {
+			fmt.Printf("Workers: %d\n", workers)
+		},
+	)
 }
 
 func printSummary(lines ...string) {
@@ -144,6 +171,7 @@ type progressReporter struct {
 	lastProcessed  int
 	lastTotal      int
 	hasDeterminate bool
+	indeterminate  int
 }
 
 const (
@@ -235,10 +263,12 @@ func (p *progressReporter) printHeartbeat() {
 		return
 	}
 
-	label := p.label
+	label := p.stage
+	indeterminate := p.indeterminate
+	p.indeterminate++
 	p.mu.Unlock()
 
-	fmt.Fprintf(os.Stderr, "%s... %s elapsed\n", label, elapsed)
+	fmt.Fprintln(os.Stderr, renderIndeterminateLine(label, indeterminate, elapsed))
 }
 
 func (p *progressReporter) normalizedStage(stage string) string {
@@ -262,6 +292,29 @@ func renderProgressLine(stage string, processed, total int, elapsed time.Duratio
 
 	bar := strings.Repeat("#", filled) + strings.Repeat("-", progressBarWidth-filled)
 	return fmt.Sprintf("%s [%s] %3d%% (%d/%d) elapsed %s", stage, bar, percentage, processed, total, elapsed)
+}
+
+func renderIndeterminateLine(stage string, tick int, elapsed time.Duration) string {
+	if progressBarWidth <= 0 {
+		return fmt.Sprintf("%s [------------------------] --%% (--/--) elapsed %s", stage, elapsed)
+	}
+
+	cycle := progressBarWidth * 2
+	position := tick % cycle
+	filled := position
+	if position > progressBarWidth {
+		filled = cycle - position
+	}
+
+	if filled < 0 {
+		filled = 0
+	}
+	if filled > progressBarWidth {
+		filled = progressBarWidth
+	}
+
+	bar := strings.Repeat("#", filled) + strings.Repeat("-", progressBarWidth-filled)
+	return fmt.Sprintf("%s [%s] --%% (--/--) elapsed %s", stage, bar, elapsed)
 }
 
 func (p *progressReporter) Stop() {

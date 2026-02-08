@@ -3,6 +3,7 @@
 package renamer
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -64,7 +65,7 @@ func New(rootDir string, dryRun bool) (*Renamer, error) {
 // NewWithValidator creates a new Renamer with an existing validator.
 func NewWithValidator(validator *safepath.Validator, dryRun bool) (*Renamer, error) {
 	if validator == nil {
-		return nil, fmt.Errorf("validator is required")
+		return nil, errors.New("validator is required")
 	}
 
 	return &Renamer{
@@ -203,22 +204,23 @@ func (r *Renamer) processFile(f collector.FileInfo, dirNames map[string]map[stri
 	}
 
 	// Skip if target already exists (safety check)
-	if _, err := os.Lstat(op.NewPath); err == nil {
-		if err := r.validator.ValidatePathForRead(op.NewPath); err != nil {
-			op.Error = fmt.Errorf("destination path escapes root: %w", err)
+	_, lstatErr := os.Lstat(op.NewPath)
+	if lstatErr == nil {
+		if validateErr := r.validator.ValidatePathForRead(op.NewPath); validateErr != nil {
+			op.Error = fmt.Errorf("destination path escapes root: %w", validateErr)
 			return op
 		}
 
-		info, err := os.Stat(op.NewPath)
-		if err != nil {
-			op.Error = fmt.Errorf("failed to stat existing target: %w", err)
+		info, statErr := os.Stat(op.NewPath)
+		if statErr != nil {
+			op.Error = fmt.Errorf("failed to stat existing target: %w", statErr)
 			return op
 		}
 
 		r.handleExistingTarget(&op, f, info)
 		return op
-	} else if !os.IsNotExist(err) {
-		op.Error = fmt.Errorf("failed to inspect target path: %w", err)
+	} else if !os.IsNotExist(lstatErr) {
+		op.Error = fmt.Errorf("failed to inspect target path: %w", lstatErr)
 		return op
 	}
 

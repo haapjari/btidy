@@ -1,7 +1,6 @@
 package flattener
 
 import (
-	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -334,7 +333,7 @@ func TestFlattener_FlattenFiles_UnsafeSymlinkFailsBeforeMutations(t *testing.T) 
 	assert.Equal(t, 0, result.MovedCount)
 	assert.Equal(t, 1, result.ErrorCount)
 	require.Len(t, result.Operations, 1)
-	assert.True(t, errors.Is(result.Operations[0].Error, safepath.ErrSymlinkEscape))
+	require.ErrorIs(t, result.Operations[0].Error, safepath.ErrSymlinkEscape)
 
 	assert.FileExists(t, safeFile)
 	assert.NoFileExists(t, filepath.Join(tmpDir, "safe.txt"))

@@ -1,6 +1,7 @@
 package e2e
 
 import (
+	"archive/zip"
 	"bytes"
 	"context"
 	"errors"
@@ -22,6 +23,12 @@ type cmdResult struct {
 	stdout string
 	stderr string
 	err    error
+}
+
+type zipFixtureEntry struct {
+	name    string
+	content []byte
+	mode    os.FileMode
 }
 
 func (r cmdResult) combinedOutput() string {
@@ -137,6 +144,83 @@ func writeFile(t *testing.T, path, content string, modTime time.Time) {
 	if err := os.Chtimes(path, modTime, modTime); err != nil {
 		t.Fatalf("failed to set file times: %v", err)
 	}
+}
+
+func writeZipArchive(t *testing.T, archivePath string, entries []zipFixtureEntry) {
+	t.Helper()
+
+	if err := os.MkdirAll(filepath.Dir(archivePath), 0o755); err != nil {
+		t.Fatalf("failed to create archive directory: %v", err)
+	}
+
+	archiveFile, err := os.Create(archivePath)
+	if err != nil {
+		t.Fatalf("failed to create archive: %v", err)
+	}
+
+	writer := zip.NewWriter(archiveFile)
+	for _, entry := range entries {
+		header := zip.FileHeader{
+			Name:   entry.name,
+			Method: zip.Deflate,
+		}
+
+		mode := entry.mode
+		if mode == 0 {
+			mode = 0o644
+		}
+		header.SetMode(mode)
+
+		entryWriter, createErr := writer.CreateHeader(&header)
+		if createErr != nil {
+			t.Fatalf("failed to create archive entry: %v", createErr)
+		}
+
+		if _, writeErr := entryWriter.Write(entry.content); writeErr != nil {
+			t.Fatalf("failed to write archive entry: %v", writeErr)
+		}
+	}
+
+	if err := writer.Close(); err != nil {
+		t.Fatalf("failed to close archive writer: %v", err)
+	}
+	if err := archiveFile.Close(); err != nil {
+		t.Fatalf("failed to close archive file: %v", err)
+	}
+}
+
+func zipBytes(t *testing.T, entries []zipFixtureEntry) []byte {
+	t.Helper()
+
+	var buffer bytes.Buffer
+	writer := zip.NewWriter(&buffer)
+	for _, entry := range entries {
+		header := zip.FileHeader{
+			Name:   entry.name,
+			Method: zip.Deflate,
+		}
+
+		mode := entry.mode
+		if mode == 0 {
+			mode = 0o644
+		}
+		header.SetMode(mode)
+
+		entryWriter, createErr := writer.CreateHeader(&header)
+		if createErr != nil {
+			t.Fatalf("failed to create zip bytes entry: %v", createErr)
+		}
+
+		if _, writeErr := entryWriter.Write(entry.content); writeErr != nil {
+			t.Fatalf("failed to write zip bytes entry: %v", writeErr)
+		}
+	}
+
+	if err := writer.Close(); err != nil {
+		t.Fatalf("failed to close zip bytes writer: %v", err)
+	}
+
+	return buffer.Bytes()
 }
 
 func assertExists(t *testing.T, path string) {
@@ -297,6 +381,72 @@ func TestEndToEndDuplicate_DryRunAndApply(t *testing.T) {
 	assertExists(t, filepath.Join(root, "a.txt"))
 	assertMissing(t, filepath.Join(root, "sub", "a_copy.txt"))
 	assertExists(t, filepath.Join(root, "unique.txt"))
+}
+
+func TestEndToEndUnzip_DryRunAndApplyRecursive(t *testing.T) {
+	binPath := binaryPath(t)
+	root := t.TempDir()
+
+	innerArchive := zipBytes(t, []zipFixtureEntry{
+		{name: "deep/final.txt", content: []byte("payload")},
+	})
+
+	outerArchivePath := filepath.Join(root, "outer.zip")
+	writeZipArchive(t, outerArchivePath, []zipFixtureEntry{
+		{name: "nested/inner.zip", content: innerArchive},
+		{name: "outer.txt", content: []byte("outer")},
+	})
+
+	dryRun := runBinary(t, binPath, "unzip", "--dry-run", root)
+	assertCommandSucceeded(t, "unzip dry-run", dryRun)
+
+	assertExists(t, outerArchivePath)
+	assertMissing(t, filepath.Join(root, "nested", "inner.zip"))
+	assertMissing(t, filepath.Join(root, "nested", "deep", "final.txt"))
+
+	apply := runBinary(t, binPath, "unzip", root)
+	assertCommandSucceeded(t, "unzip apply", apply)
+
+	assertMissing(t, filepath.Join(root, "outer.zip"))
+	assertMissing(t, filepath.Join(root, "nested", "inner.zip"))
+	assertExists(t, filepath.Join(root, "outer.txt"))
+	assertExists(t, filepath.Join(root, "nested", "deep", "final.txt"))
+}
+
+func TestEndToEndUnzip_ZipSlipBlocked(t *testing.T) {
+	binPath := binaryPath(t)
+	workspace := t.TempDir()
+	target := filepath.Join(workspace, "target")
+	if err := os.MkdirAll(target, 0o755); err != nil {
+		t.Fatalf("failed to create target: %v", err)
+	}
+
+	outsideSentinel := filepath.Join(workspace, "outside-sentinel.txt")
+	if err := os.WriteFile(outsideSentinel, []byte("do-not-touch"), 0o600); err != nil {
+		t.Fatalf("failed to create outside sentinel: %v", err)
+	}
+	outsideBefore, err := os.ReadFile(outsideSentinel)
+	if err != nil {
+		t.Fatalf("failed to read outside sentinel before unzip: %v", err)
+	}
+
+	archivePath := filepath.Join(target, "bad.zip")
+	writeZipArchive(t, archivePath, []zipFixtureEntry{
+		{name: "../outside-sentinel.txt", content: []byte("attack")},
+	})
+
+	result := runBinary(t, binPath, "unzip", target)
+	assertCommandFailed(t, result, "unsafe path", "unzip")
+
+	assertExists(t, archivePath)
+
+	outsideAfter, err := os.ReadFile(outsideSentinel)
+	if err != nil {
+		t.Fatalf("failed to read outside sentinel after unzip: %v", err)
+	}
+	if !bytes.Equal(outsideBefore, outsideAfter) {
+		t.Fatalf("outside sentinel changed unexpectedly")
+	}
 }
 
 func TestEndToEndRename_Idempotent(t *testing.T) {
@@ -496,8 +646,8 @@ func TestEndToEndRename_SymlinkEscapeBlocked(t *testing.T) {
 	}
 
 	linkPath := filepath.Join(root, "escape_link.txt")
-	if err := os.Symlink(outsideFile, linkPath); err != nil {
-		t.Skipf("symlink not supported: %v", err)
+	if symlinkErr := os.Symlink(outsideFile, linkPath); symlinkErr != nil {
+		t.Skipf("symlink not supported: %v", symlinkErr)
 	}
 
 	result := runBinary(t, binPath, "rename", "--dry-run", root)
@@ -536,8 +686,8 @@ func TestEndToEndFlatten_SymlinkEscapeBlocked(t *testing.T) {
 	}
 
 	linkPath := filepath.Join(root, "nested", "escape_link.txt")
-	if err := os.Symlink(outsideFile, linkPath); err != nil {
-		t.Skipf("symlink not supported: %v", err)
+	if symlinkErr := os.Symlink(outsideFile, linkPath); symlinkErr != nil {
+		t.Skipf("symlink not supported: %v", symlinkErr)
 	}
 
 	result := runBinary(t, binPath, "flatten", root)
@@ -573,8 +723,8 @@ func TestEndToEndDuplicate_SymlinkEscapeBlocked(t *testing.T) {
 	}
 
 	linkPath := filepath.Join(root, "escape_link.txt")
-	if err := os.Symlink(outsideFile, linkPath); err != nil {
-		t.Skipf("symlink not supported: %v", err)
+	if symlinkErr := os.Symlink(outsideFile, linkPath); symlinkErr != nil {
+		t.Skipf("symlink not supported: %v", symlinkErr)
 	}
 
 	result := runBinary(t, binPath, "duplicate", root)
@@ -609,8 +759,8 @@ func TestEndToEndManifest_SymlinkEscapeBlocked(t *testing.T) {
 	}
 
 	linkPath := filepath.Join(root, "escape_link.txt")
-	if err := os.Symlink(outsideFile, linkPath); err != nil {
-		t.Skipf("symlink not supported: %v", err)
+	if symlinkErr := os.Symlink(outsideFile, linkPath); symlinkErr != nil {
+		t.Skipf("symlink not supported: %v", symlinkErr)
 	}
 
 	manifestPath := filepath.Join(root, "manifest.json")

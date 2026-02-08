@@ -2,7 +2,6 @@ package deduplicator
 
 import (
 	"crypto/rand"
-	"errors"
 	"os"
 	"path/filepath"
 	"testing"
@@ -727,7 +726,7 @@ func TestDeduplicator_FindDuplicates_UnsafeSymlinkFailsBeforeDeletes(t *testing.
 	assert.Equal(t, 0, result.DuplicatesFound)
 	assert.Equal(t, 0, result.DeletedCount)
 	require.Len(t, result.Operations, 1)
-	assert.True(t, errors.Is(result.Operations[0].Error, safepath.ErrSymlinkEscape))
+	require.ErrorIs(t, result.Operations[0].Error, safepath.ErrSymlinkEscape)
 
 	assert.FileExists(t, filepath.Join(tmpDir, "a.txt"))
 	assert.FileExists(t, filepath.Join(tmpDir, "b.txt"))

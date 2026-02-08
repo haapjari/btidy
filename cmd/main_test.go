@@ -1,6 +1,7 @@
 package main
 
 import (
+	"archive/zip"
 	"io"
 	"os"
 	"path/filepath"
@@ -51,6 +52,27 @@ func captureStdout(t *testing.T, fn func()) string {
 	require.NoError(t, reader.Close())
 
 	return string(out)
+}
+
+func writeZipArchive(t *testing.T, archivePath string, entries map[string]string) {
+	t.Helper()
+
+	require.NoError(t, os.MkdirAll(filepath.Dir(archivePath), 0o755))
+
+	archiveFile, err := os.Create(archivePath)
+	require.NoError(t, err)
+
+	writer := zip.NewWriter(archiveFile)
+	for name, content := range entries {
+		entryWriter, err := writer.Create(name)
+		require.NoError(t, err)
+
+		_, err = entryWriter.Write([]byte(content))
+		require.NoError(t, err)
+	}
+
+	require.NoError(t, writer.Close())
+	require.NoError(t, archiveFile.Close())
 }
 
 func TestRunRename_DryRun_OutputSummary(t *testing.T) {
@@ -110,4 +132,37 @@ func TestRunFlatten_DryRun_OutputSummary(t *testing.T) {
 
 	_, err = os.Stat(filepath.Join(tmpDir, "file.txt"))
 	assert.True(t, os.IsNotExist(err), "dry-run must not place file in root")
+}
+
+func TestRunUnzip_DryRun_OutputSummary(t *testing.T) {
+	tmpDir := t.TempDir()
+	writeZipArchive(t, filepath.Join(tmpDir, "photos.zip"), map[string]string{
+		"nested/photo.jpg": "photo",
+	})
+
+	setCommandGlobals(t, true, false, 1)
+
+	output := captureStdout(t, func() {
+		err := runUnzip(nil, []string{tmpDir})
+		require.NoError(t, err)
+	})
+
+	assert.Contains(t, output, "=== DRY RUN - no changes will be made ===")
+	assert.Contains(t, output, "Command: UNZIP")
+	assert.Contains(t, output, "=== Summary ===")
+	assert.Contains(t, output, "Total files:        1")
+	assert.Contains(t, output, "Archives found:     1")
+	assert.Contains(t, output, "Archives processed: 1")
+	assert.Contains(t, output, "Archives extracted: 1")
+	assert.Contains(t, output, "Archives deleted:   1")
+	assert.Contains(t, output, "Files extracted:    1")
+	assert.Contains(t, output, "Dir entries:        0")
+	assert.Contains(t, output, "Errors:             0")
+	assert.Contains(t, output, "Run without --dry-run to apply changes.")
+
+	_, err := os.Stat(filepath.Join(tmpDir, "photos.zip"))
+	require.NoError(t, err, "dry-run must not remove archives")
+
+	_, err = os.Stat(filepath.Join(tmpDir, "nested", "photo.jpg"))
+	assert.True(t, os.IsNotExist(err), "dry-run must not extract files")
 }

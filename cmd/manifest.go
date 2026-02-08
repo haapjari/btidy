@@ -49,7 +49,7 @@ Typical safe workflow:
 }
 
 func runManifest(args []string, outputPath string) error {
-	progress := startProgress("Working")
+	progress := startProgress("collecting")
 	fmt.Println("Collecting files and computing hashes...")
 
 	execution, err := newUseCaseService().RunManifest(usecase.ManifestRequest{

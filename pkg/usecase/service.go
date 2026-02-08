@@ -13,6 +13,7 @@ import (
 	"btidy/pkg/manifest"
 	"btidy/pkg/renamer"
 	"btidy/pkg/safepath"
+	"btidy/pkg/unzipper"
 )
 
 // Options configures a Service.
@@ -83,6 +84,21 @@ type DuplicateExecution struct {
 	Result          deduplicator.Result
 }
 
+// UnzipRequest contains inputs for the unzip workflow.
+type UnzipRequest struct {
+	TargetDir  string
+	DryRun     bool
+	OnProgress ProgressCallback
+}
+
+// UnzipExecution contains unzip workflow outputs.
+type UnzipExecution struct {
+	RootDir         string
+	FileCount       int
+	CollectDuration time.Duration
+	Result          unzipper.Result
+}
+
 // ManifestRequest contains inputs for the manifest workflow.
 type ManifestRequest struct {
 	TargetDir  string
@@ -102,68 +118,106 @@ type ManifestExecution struct {
 
 // RunRename executes the rename workflow.
 func (s *Service) RunRename(req RenameRequest) (RenameExecution, error) {
-	workflowResult, err := runFileWorkflow(s, req.TargetDir, renameExecutor(req.DryRun, req.OnProgress))
-	if err != nil {
-		return RenameExecution{}, err
-	}
-
-	execution := RenameExecution{
-		RootDir:         workflowResult.RootDir,
-		FileCount:       workflowResult.FileCount,
-		CollectDuration: workflowResult.CollectDuration,
-		Result:          workflowResult.Result,
-	}
-	if err := failOnUnsafeOperation(execution.Result.Operations, "rename", func(op renamer.RenameOperation) (string, error) {
-		return op.OriginalPath, op.Error
-	}); err != nil {
-		return execution, err
-	}
-
-	return execution, nil
+	return runCheckedExecution(
+		s,
+		req.TargetDir,
+		renameExecutor(req.DryRun, req.OnProgress),
+		renameExecutionFromWorkflow,
+		"rename",
+		func(execution RenameExecution) []renamer.RenameOperation {
+			return execution.Result.Operations
+		},
+		func(op renamer.RenameOperation) (string, error) {
+			return op.OriginalPath, op.Error
+		},
+	)
 }
 
 // RunFlatten executes the flatten workflow.
 func (s *Service) RunFlatten(req FlattenRequest) (FlattenExecution, error) {
-	workflowResult, err := runFileWorkflow(s, req.TargetDir, flattenExecutor(req.DryRun, req.Workers, req.OnProgress))
-	if err != nil {
-		return FlattenExecution{}, err
-	}
-
-	execution := FlattenExecution{
-		RootDir:         workflowResult.RootDir,
-		FileCount:       workflowResult.FileCount,
-		CollectDuration: workflowResult.CollectDuration,
-		Result:          workflowResult.Result,
-	}
-	if err := failOnUnsafeOperation(execution.Result.Operations, "flatten", func(op flattener.MoveOperation) (string, error) {
-		return op.OriginalPath, op.Error
-	}); err != nil {
-		return execution, err
-	}
-
-	return execution, nil
+	return runCheckedExecution(
+		s,
+		req.TargetDir,
+		flattenExecutor(req.DryRun, req.Workers, req.OnProgress),
+		flattenExecutionFromWorkflow,
+		"flatten",
+		func(execution FlattenExecution) []flattener.MoveOperation {
+			return execution.Result.Operations
+		},
+		func(op flattener.MoveOperation) (string, error) {
+			return op.OriginalPath, op.Error
+		},
+	)
 }
 
 // RunDuplicate executes the duplicate workflow.
 func (s *Service) RunDuplicate(req DuplicateRequest) (DuplicateExecution, error) {
-	workflowResult, err := runFileWorkflow(s, req.TargetDir, duplicateExecutor(req.DryRun, req.Workers, req.OnProgress))
-	if err != nil {
-		return DuplicateExecution{}, err
-	}
+	return runCheckedExecution(
+		s,
+		req.TargetDir,
+		duplicateExecutor(req.DryRun, req.Workers, req.OnProgress),
+		duplicateExecutionFromWorkflow,
+		"duplicate",
+		func(execution DuplicateExecution) []deduplicator.DeleteOperation {
+			return execution.Result.Operations
+		},
+		func(op deduplicator.DeleteOperation) (string, error) {
+			return op.Path, op.Error
+		},
+	)
+}
 
-	execution := DuplicateExecution{
+// RunUnzip executes the unzip workflow.
+func (s *Service) RunUnzip(req UnzipRequest) (UnzipExecution, error) {
+	return runCheckedExecution(
+		s,
+		req.TargetDir,
+		unzipExecutor(req.DryRun, req.OnProgress),
+		unzipExecutionFromWorkflow,
+		"unzip",
+		func(execution UnzipExecution) []unzipper.ExtractOperation {
+			return execution.Result.Operations
+		},
+		func(op unzipper.ExtractOperation) (string, error) {
+			return op.ArchivePath, op.Error
+		},
+	)
+}
+
+func renameExecutionFromWorkflow(workflowResult fileWorkflowResult[renamer.Result]) RenameExecution {
+	return RenameExecution{
 		RootDir:         workflowResult.RootDir,
 		FileCount:       workflowResult.FileCount,
 		CollectDuration: workflowResult.CollectDuration,
 		Result:          workflowResult.Result,
 	}
-	if err := failOnUnsafeOperation(execution.Result.Operations, "duplicate", func(op deduplicator.DeleteOperation) (string, error) {
-		return op.Path, op.Error
-	}); err != nil {
-		return execution, err
-	}
+}
 
-	return execution, nil
+func flattenExecutionFromWorkflow(workflowResult fileWorkflowResult[flattener.Result]) FlattenExecution {
+	return FlattenExecution{
+		RootDir:         workflowResult.RootDir,
+		FileCount:       workflowResult.FileCount,
+		CollectDuration: workflowResult.CollectDuration,
+		Result:          workflowResult.Result,
+	}
+}
+
+func duplicateExecutionFromWorkflow(workflowResult fileWorkflowResult[deduplicator.Result]) DuplicateExecution {
+	return DuplicateExecution{
+		RootDir:         workflowResult.RootDir,
+		FileCount:       workflowResult.FileCount,
+		CollectDuration: workflowResult.CollectDuration,
+		Result:          workflowResult.Result,
+	}
+}
+
+func unzipExecutionFromWorkflow(workflowResult fileWorkflowResult[unzipper.Result]) UnzipExecution {
+	return UnzipExecution{
+		RootDir:         workflowResult.RootDir,
+		FileCount:       workflowResult.FileCount,
+		CollectDuration: workflowResult.CollectDuration,
+		Result:          workflowResult.Result,
+	}
 }
 
 // RunManifest executes the manifest workflow.
@@ -266,6 +320,29 @@ func runFileWorkflow[T any](s *Service, targetDir string, execute func(rootDir s
 	return workflowResult, nil
 }
 
+func runCheckedExecution[T any, E any, O any](
+	s *Service,
+	targetDir string,
+	execute func(rootDir string, validator *safepath.Validator, files []collector.FileInfo) (T, error),
+	toExecution func(fileWorkflowResult[T]) E,
+	command string,
+	operations func(E) []O,
+	operationData func(O) (path string, err error),
+) (E, error) {
+	workflowResult, err := runFileWorkflow(s, targetDir, execute)
+	if err != nil {
+		var zero E
+		return zero, err
+	}
+
+	execution := toExecution(workflowResult)
+	if err := failOnUnsafeOperation(operations(execution), command, operationData); err != nil {
+		return execution, err
+	}
+
+	return execution, nil
+}
+
 func renameExecutor(dryRun bool, onProgress ProgressCallback) func(rootDir string, validator *safepath.Validator, files []collector.FileInfo) (renamer.Result, error) {
 	return func(_ string, validator *safepath.Validator, files []collector.FileInfo) (renamer.Result, error) {
 		r, err := renamer.NewWithValidator(validator, dryRun)
@@ -280,29 +357,89 @@ func renameExecutor(dryRun bool, onProgress ProgressCallback) func(rootDir strin
 }
 
 func flattenExecutor(dryRun bool, workers int, onProgress ProgressCallback) func(rootDir string, validator *safepath.Validator, files []collector.FileInfo) (flattener.Result, error) {
-	return func(_ string, validator *safepath.Validator, files []collector.FileInfo) (flattener.Result, error) {
-		f, err := flattener.NewWithValidator(validator, dryRun, workers)
+	return workerExecutor(
+		dryRun,
+		workers,
+		onProgress,
+		flattener.NewWithValidator,
+		"failed to create flattener",
+		runFlattenWorker,
+	)
+}
+
+func duplicateExecutor(dryRun bool, workers int, onProgress ProgressCallback) func(rootDir string, validator *safepath.Validator, files []collector.FileInfo) (deduplicator.Result, error) {
+	return workerExecutor(
+		dryRun,
+		workers,
+		onProgress,
+		deduplicator.NewWithValidator,
+		"failed to create deduplicator",
+		runDuplicateWorker,
+	)
+}
+
+func unzipExecutor(dryRun bool, onProgress ProgressCallback) func(rootDir string, validator *safepath.Validator, files []collector.FileInfo) (unzipper.Result, error) {
+	return func(_ string, validator *safepath.Validator, files []collector.FileInfo) (unzipper.Result, error) {
+		u, err := unzipper.NewWithValidator(validator, dryRun)
 		if err != nil {
-			return flattener.Result{}, fmt.Errorf("failed to create flattener: %w", err)
+			return unzipper.Result{}, fmt.Errorf("failed to create unzipper: %w", err)
 		}
 
-		return f.FlattenFilesWithProgress(files, func(stage string, processed, total int) {
+		return u.ExtractArchivesWithProgress(files, func(stage string, processed, total int) {
 			emitProgress(onProgress, stage, processed, total)
 		}), nil
 	}
 }
 
-func duplicateExecutor(dryRun bool, workers int, onProgress ProgressCallback) func(rootDir string, validator *safepath.Validator, files []collector.FileInfo) (deduplicator.Result, error) {
-	return func(_ string, validator *safepath.Validator, files []collector.FileInfo) (deduplicator.Result, error) {
-		d, err := deduplicator.NewWithValidator(validator, dryRun, workers)
-		if err != nil {
-			return deduplicator.Result{}, fmt.Errorf("failed to create deduplicator: %w", err)
-		}
-
-		return d.FindDuplicatesWithProgress(files, func(stage string, processed, total int) {
-			emitProgress(onProgress, stage, processed, total)
-		}), nil
+func executeWorkerWorkflow[Worker any, Result any](
+	validator *safepath.Validator,
+	dryRun bool,
+	workers int,
+	files []collector.FileInfo,
+	onProgress ProgressCallback,
+	newWorker func(*safepath.Validator, bool, int) (Worker, error),
+	createErrContext string,
+	run func(worker Worker, files []collector.FileInfo, progress func(stage string, processed, total int)) Result,
+) (Result, error) {
+	worker, err := newWorker(validator, dryRun, workers)
+	if err != nil {
+		var zero Result
+		return zero, fmt.Errorf("%s: %w", createErrContext, err)
 	}
+
+	return run(worker, files, func(stage string, processed, total int) {
+		emitProgress(onProgress, stage, processed, total)
+	}), nil
+}
+
+func workerExecutor[Worker any, Result any](
+	dryRun bool,
+	workers int,
+	onProgress ProgressCallback,
+	newWorker func(*safepath.Validator, bool, int) (Worker, error),
+	createErrContext string,
+	run func(worker Worker, files []collector.FileInfo, progress func(stage string, processed, total int)) Result,
+) func(rootDir string, validator *safepath.Validator, files []collector.FileInfo) (Result, error) {
+	return func(_ string, validator *safepath.Validator, files []collector.FileInfo) (Result, error) {
+		return executeWorkerWorkflow(
+			validator,
+			dryRun,
+			workers,
+			files,
+			onProgress,
+			newWorker,
+			createErrContext,
+			run,
+		)
+	}
+}
+
+func runFlattenWorker(worker *flattener.Flattener, files []collector.FileInfo, progress func(stage string, processed, total int)) flattener.Result {
+	return worker.FlattenFilesWithProgress(files, progress)
+}
+
+func runDuplicateWorker(worker *deduplicator.Deduplicator, files []collector.FileInfo, progress func(stage string, processed, total int)) deduplicator.Result {
+	return worker.FindDuplicatesWithProgress(files, progress)
 }
 
 func emitProgress(onProgress ProgressCallback, stage string, processed, total int) {

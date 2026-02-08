@@ -1,12 +1,17 @@
 # btidy
 
-Simple application that I use to organize backup folders by renaming, flattening and removing duplicates.
+Simple application that I use to organize backup folders by unzipping,
+renaming, flattening, and removing duplicates.
 
 ## Examples
 
 ```bash
 # Build
 make build
+
+# Unzip (preview, then apply)
+./btidy unzip --dry-run /path/to/backup
+./btidy unzip /path/to/backup
 
 # Rename (preview, then apply)
 ./btidy rename --dry-run /path/to/backup
@@ -28,6 +33,7 @@ make build
 ## Typical Workflow
 
 ```bash
+./btidy unzip /path/to/backup/2018
 ./btidy rename /path/to/backup/2018
 ./btidy flatten /path/to/backup/2018
 ./btidy duplicate /path/to/backup/2018

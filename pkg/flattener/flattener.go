@@ -149,9 +149,9 @@ func (f *Flattener) FlattenFilesWithProgress(files []collector.FileInfo, onProgr
 }
 
 // computeHashes pre-computes SHA256 hashes for all files using parallel hashing.
-func (f *Flattener) computeHashes(files []collector.FileInfo, onProgress func(processed, total int)) (map[string]string, map[string]error) {
-	hashes := make(map[string]string, len(files))
-	invalidReadErrors := make(map[string]error)
+func (f *Flattener) computeHashes(files []collector.FileInfo, onProgress func(processed, total int)) (hashes map[string]string, invalidReadErrors map[string]error) {
+	hashes = make(map[string]string, len(files))
+	invalidReadErrors = make(map[string]error)
 
 	// Prepare files for parallel hashing.
 	toHash := make([]hasher.FileToHash, 0, len(files))
