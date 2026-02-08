@@ -59,6 +59,9 @@
       .grid.two {
         grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
       }
+      .grid.three {
+        grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+      }
       .tag {
         display: inline-block;
         padding: 2px 8px;
@@ -101,6 +104,12 @@
         stroke: var(--accent);
         stroke-width: 1.5;
       }
+      .flow-box-safety {
+        fill: #e6f0f0;
+        stroke: #1b6f76;
+        stroke-width: 1.5;
+        stroke-dasharray: 4 2;
+      }
       .flow-line {
         stroke: var(--accent);
         stroke-width: 1.2;
@@ -119,18 +128,18 @@
     <header>
       <span class="tag">btidy</span>
       <h1>Architecture Map</h1>
-      <p>How the CLI orchestrates file collection, safe mutations, hashing, and reporting.</p>
+      <p>How the CLI orchestrates file collection, safe mutations, hashing, journaling, and reporting.</p>
     </header>
     <main>
       <section>
         <h2>Entry Points</h2>
-        <div class="grid two">
+        <div class="grid three">
           <div>
             <span class="chip">cmd/main.go</span>
             <ul>
-              <li>Cobra commands: rename, flatten, duplicate, manifest.</li>
+              <li>Cobra commands: unzip, rename, flatten, organize, duplicate, manifest, undo, purge.</li>
               <li>Validates input path and prints summaries.</li>
-              <li>Dry-run and verbose flags live here.</li>
+              <li>Global flags: --dry-run, --verbose, --workers, --no-snapshot.</li>
             </ul>
           </div>
           <div>
@@ -138,7 +147,15 @@
             <ul>
               <li>Guards all mutating operations.</li>
               <li>Rejects path or symlink escapes.</li>
-              <li>Used by renamer, flattener, deduplicator.</li>
+              <li>Used by every domain package.</li>
+            </ul>
+          </div>
+          <div>
+            <span class="chip">pkg/usecase</span>
+            <ul>
+              <li>Orchestrates workflows with generics.</li>
+              <li>Acquires file lock, creates journal, takes snapshot.</li>
+              <li>Delegates to domain packages.</li>
             </ul>
           </div>
         </div>
@@ -147,71 +164,155 @@
       <section>
         <h2>Component Map</h2>
         <div class="diagram">
-          <svg viewBox="0 0 800 300" width="100%" height="auto" role="img" aria-label="Component map">
+          <svg viewBox="0 0 900 400" width="100%" height="auto" role="img" aria-label="Component map">
             <defs>
               <marker id="arrow" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto">
                 <path d="M0,0 L0,6 L9,3 z" fill="#1b6f76"></path>
               </marker>
             </defs>
+            <!-- CLI -->
             <rect x="20" y="30" width="160" height="56" class="flow-box"></rect>
             <text x="100" y="62" text-anchor="middle" class="flow-step">cmd/main.go</text>
 
+            <!-- Collector -->
             <rect x="240" y="30" width="160" height="56" class="flow-box"></rect>
             <text x="320" y="62" text-anchor="middle" class="flow-step">collector</text>
 
-            <rect x="460" y="10" width="150" height="56" class="flow-box"></rect>
-            <text x="535" y="42" text-anchor="middle" class="flow-step">renamer</text>
+            <!-- Domain packages -->
+            <rect x="460" y="10" width="150" height="42" class="flow-box"></rect>
+            <text x="535" y="36" text-anchor="middle" class="flow-step">unzipper</text>
 
-            <rect x="460" y="90" width="150" height="56" class="flow-box"></rect>
-            <text x="535" y="122" text-anchor="middle" class="flow-step">flattener</text>
+            <rect x="460" y="62" width="150" height="42" class="flow-box"></rect>
+            <text x="535" y="88" text-anchor="middle" class="flow-step">renamer</text>
 
-            <rect x="460" y="170" width="150" height="56" class="flow-box"></rect>
-            <text x="535" y="202" text-anchor="middle" class="flow-step">deduplicator</text>
+            <rect x="460" y="114" width="150" height="42" class="flow-box"></rect>
+            <text x="535" y="140" text-anchor="middle" class="flow-step">flattener</text>
 
-            <rect x="650" y="60" width="130" height="56" class="flow-box"></rect>
-            <text x="715" y="92" text-anchor="middle" class="flow-step">hasher</text>
+            <rect x="460" y="166" width="150" height="42" class="flow-box"></rect>
+            <text x="535" y="192" text-anchor="middle" class="flow-step">organizer</text>
 
-            <rect x="650" y="150" width="130" height="56" class="flow-box"></rect>
-            <text x="715" y="182" text-anchor="middle" class="flow-step">safepath</text>
+            <rect x="460" y="218" width="150" height="42" class="flow-box"></rect>
+            <text x="535" y="244" text-anchor="middle" class="flow-step">deduplicator</text>
 
+            <!-- Shared services -->
+            <rect x="700" y="20" width="140" height="42" class="flow-box"></rect>
+            <text x="770" y="46" text-anchor="middle" class="flow-step">hasher</text>
+
+            <rect x="700" y="72" width="140" height="42" class="flow-box"></rect>
+            <text x="770" y="98" text-anchor="middle" class="flow-step">safepath</text>
+
+            <!-- Safety infrastructure (dashed) -->
+            <rect x="700" y="140" width="140" height="42" class="flow-box-safety"></rect>
+            <text x="770" y="166" text-anchor="middle" class="flow-step">trash</text>
+
+            <rect x="700" y="192" width="140" height="42" class="flow-box-safety"></rect>
+            <text x="770" y="218" text-anchor="middle" class="flow-step">journal</text>
+
+            <rect x="700" y="244" width="140" height="42" class="flow-box-safety"></rect>
+            <text x="770" y="270" text-anchor="middle" class="flow-step">filelock</text>
+
+            <rect x="700" y="296" width="140" height="42" class="flow-box-safety"></rect>
+            <text x="770" y="322" text-anchor="middle" class="flow-step">metadata</text>
+
+            <rect x="460" y="296" width="150" height="42" class="flow-box-safety"></rect>
+            <text x="535" y="322" text-anchor="middle" class="flow-step">manifest</text>
+
+            <!-- Connections -->
             <line x1="180" y1="58" x2="240" y2="58" class="flow-line"></line>
-            <line x1="400" y1="58" x2="460" y2="38" class="flow-line"></line>
-            <line x1="400" y1="58" x2="460" y2="118" class="flow-line"></line>
-            <line x1="400" y1="58" x2="460" y2="198" class="flow-line"></line>
-            <line x1="610" y1="38" x2="650" y2="88" class="flow-line"></line>
-            <line x1="610" y1="118" x2="650" y2="88" class="flow-line"></line>
-            <line x1="610" y1="198" x2="650" y2="178" class="flow-line"></line>
+            <line x1="400" y1="58" x2="460" y2="31" class="flow-line"></line>
+            <line x1="400" y1="58" x2="460" y2="83" class="flow-line"></line>
+            <line x1="400" y1="58" x2="460" y2="135" class="flow-line"></line>
+            <line x1="400" y1="58" x2="460" y2="187" class="flow-line"></line>
+            <line x1="400" y1="58" x2="460" y2="239" class="flow-line"></line>
+            <line x1="610" y1="36" x2="700" y2="41" class="flow-line"></line>
+            <line x1="610" y1="88" x2="700" y2="93" class="flow-line"></line>
+            <line x1="610" y1="140" x2="700" y2="46" class="flow-line"></line>
+            <line x1="610" y1="192" x2="700" y2="46" class="flow-line"></line>
+            <line x1="610" y1="244" x2="700" y2="93" class="flow-line"></line>
           </svg>
-          <div class="legend">Collector feeds all phases; hasher and safepath provide shared services.</div>
+          <div class="legend">Collector feeds all phases. Hasher and safepath provide shared services. Dashed boxes are safety infrastructure (trash, journal, filelock, metadata).</div>
         </div>
       </section>
 
       <section>
         <h2>Phase Flows</h2>
         <div class="diagram">
-          <svg viewBox="0 0 800 220" width="100%" height="auto" role="img" aria-label="Phase flow">
+          <svg viewBox="0 0 900 300" width="100%" height="auto" role="img" aria-label="Phase flow">
             <defs>
               <marker id="arrow2" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto">
                 <path d="M0,0 L0,6 L9,3 z" fill="#1b6f76"></path>
               </marker>
             </defs>
-            <rect x="20" y="30" width="180" height="56" class="flow-box"></rect>
-            <text x="110" y="62" text-anchor="middle" class="flow-step">Collect</text>
-            <rect x="240" y="30" width="180" height="56" class="flow-box"></rect>
-            <text x="330" y="62" text-anchor="middle" class="flow-step">Rename</text>
-            <rect x="460" y="30" width="180" height="56" class="flow-box"></rect>
-            <text x="550" y="62" text-anchor="middle" class="flow-step">Flatten</text>
-            <rect x="240" y="120" width="180" height="56" class="flow-box"></rect>
-            <text x="330" y="152" text-anchor="middle" class="flow-step">Duplicate</text>
-            <rect x="460" y="120" width="180" height="56" class="flow-box"></rect>
-            <text x="550" y="152" text-anchor="middle" class="flow-step">Manifest</text>
+            <!-- Main pipeline -->
+            <rect x="20" y="30" width="130" height="56" class="flow-box"></rect>
+            <text x="85" y="62" text-anchor="middle" class="flow-step">Collect</text>
+            <rect x="180" y="30" width="120" height="56" class="flow-box"></rect>
+            <text x="240" y="62" text-anchor="middle" class="flow-step">Unzip</text>
+            <rect x="330" y="30" width="120" height="56" class="flow-box"></rect>
+            <text x="390" y="62" text-anchor="middle" class="flow-step">Rename</text>
+            <rect x="480" y="30" width="120" height="56" class="flow-box"></rect>
+            <text x="540" y="62" text-anchor="middle" class="flow-step">Flatten</text>
+            <rect x="630" y="30" width="120" height="56" class="flow-box"></rect>
+            <text x="690" y="62" text-anchor="middle" class="flow-step">Organize</text>
+            <rect x="780" y="30" width="100" height="56" class="flow-box"></rect>
+            <text x="830" y="62" text-anchor="middle" class="flow-step">Duplicate</text>
 
-            <line x1="200" y1="58" x2="240" y2="58" class="flow-line" marker-end="url(#arrow2)"></line>
-            <line x1="420" y1="58" x2="460" y2="58" class="flow-line" marker-end="url(#arrow2)"></line>
-            <line x1="330" y1="86" x2="330" y2="120" class="flow-line" marker-end="url(#arrow2)"></line>
-            <line x1="550" y1="86" x2="550" y2="120" class="flow-line" marker-end="url(#arrow2)"></line>
+            <!-- Supporting operations -->
+            <rect x="180" y="120" width="120" height="56" class="flow-box"></rect>
+            <text x="240" y="152" text-anchor="middle" class="flow-step">Manifest</text>
+            <rect x="380" y="120" width="120" height="56" class="flow-box-safety"></rect>
+            <text x="440" y="152" text-anchor="middle" class="flow-step">Undo</text>
+            <rect x="580" y="120" width="120" height="56" class="flow-box-safety"></rect>
+            <text x="640" y="152" text-anchor="middle" class="flow-step">Purge</text>
+
+            <!-- Arrows -->
+            <line x1="150" y1="58" x2="180" y2="58" class="flow-line" marker-end="url(#arrow2)"></line>
+            <line x1="300" y1="58" x2="330" y2="58" class="flow-line" marker-end="url(#arrow2)"></line>
+            <line x1="450" y1="58" x2="480" y2="58" class="flow-line" marker-end="url(#arrow2)"></line>
+            <line x1="600" y1="58" x2="630" y2="58" class="flow-line" marker-end="url(#arrow2)"></line>
+            <line x1="750" y1="58" x2="780" y2="58" class="flow-line" marker-end="url(#arrow2)"></line>
+
+            <!-- Manifest from Collect -->
+            <line x1="85" y1="86" x2="85" y2="148" class="flow-line" marker-end="url(#arrow2)"></line>
+            <line x1="85" y1="148" x2="180" y2="148" class="flow-line" marker-end="url(#arrow2)"></line>
           </svg>
-          <div class="legend">Typical order: rename, flatten, duplicate. Manifest can be run before and after.</div>
+          <div class="legend">Main pipeline: Collect, Unzip, Rename, Flatten, Organize, Duplicate. Manifest can be run before and after. Undo reverses any operation. Purge removes trash permanently.</div>
+        </div>
+      </section>
+
+      <section>
+        <h2>Safety Infrastructure</h2>
+        <div class="grid two">
+          <div>
+            <span class="chip">Soft-Delete</span>
+            <ul>
+              <li>Files are moved to .btidy/trash/&lt;run-id&gt;/, never permanently deleted.</li>
+              <li>Only <code>purge --force</code> permanently removes files.</li>
+              <li>Trash preserves relative paths for restoration.</li>
+            </ul>
+          </div>
+          <div>
+            <span class="chip">Write-Ahead Journal</span>
+            <ul>
+              <li>Intent entry written before action, confirmation after.</li>
+              <li>Stored in .btidy/journal/&lt;run-id&gt;.jsonl.</li>
+              <li>Enables undo and crash detection.</li>
+            </ul>
+          </div>
+          <div>
+            <span class="chip">Pre-Op Snapshots</span>
+            <ul>
+              <li>Manifest saved to .btidy/manifests/ before each operation.</li>
+              <li>Disable with --no-snapshot flag.</li>
+            </ul>
+          </div>
+          <div>
+            <span class="chip">File Locking</span>
+            <ul>
+              <li>Advisory lock at .btidy/lock prevents concurrent access.</li>
+              <li>Pre-delete verification re-hashes before removal.</li>
+            </ul>
+          </div>
         </div>
       </section>
 
@@ -221,6 +322,10 @@
           <li>All mutations are validated by safepath to prevent escaping root.</li>
           <li>Hashing uses a worker pool configured by the CLI.</li>
           <li>Dry-run prints planned changes without mutating the filesystem.</li>
+          <li>Files are trashed (soft-deleted), not permanently removed.</li>
+          <li>Every mutation is journaled with write-ahead entries for undo support.</li>
+          <li>Advisory file locking prevents concurrent btidy processes.</li>
+          <li>Pre-delete content verification ensures files haven't changed.</li>
         </ul>
       </section>
     </main>

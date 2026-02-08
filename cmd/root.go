@@ -21,51 +21,53 @@ func buildRootCommand() *cobra.Command {
 		Use:     "btidy",
 		Version: version,
 		Short:   "Organize backup files by unzipping, renaming, and flattening directory structures",
-		Long: `btidy helps clean up backup directories.
+		Long: `btidy helps clean up backup directories. Every destructive operation is
+reversible through soft-delete, journaling, and undo.
 
 Commands:
-	  unzip      Extracts zip archives recursively and removes extracted archives
+  unzip      Extracts zip archives recursively and removes extracted archives
   rename     Renames files in place with consistent naming
   flatten    Moves all files to root directory, removes duplicates by content hash
   organize   Groups files into subdirectories by file extension
   duplicate  Finds and removes duplicate files by content hash
   manifest   Creates a cryptographic inventory of all files
+  undo       Reverses the most recent operation using its journal
+  purge      Permanently deletes trashed files (only irrecoverable command)
 
-	Examples:
-	  # Extract archives recursively first (recommended)
-	  btidy unzip --dry-run /path/to/backup/2018
+Examples:
+  # Typical workflow: unzip, rename, flatten, organize, deduplicate
+  btidy unzip /path/to/backup/2018
+  btidy rename /path/to/backup/2018
+  btidy flatten /path/to/backup/2018
+  btidy organize /path/to/backup/2018
+  btidy duplicate /path/to/backup/2018
 
-	  # Extract archives and remove the source zip files
-	  btidy unzip /path/to/backup/2018
+  # Preview any command with --dry-run
+  btidy unzip --dry-run /path/to/backup/2018
+  btidy rename --dry-run /path/to/backup/2018
 
-  # Preview what rename would do (recommended first step)
-	  btidy rename --dry-run /path/to/backup/2018
+  # Undo the last operation
+  btidy undo /path/to/backup/2018
+  btidy undo --run <run-id> /path/to/backup/2018
 
-  # Actually rename files
-	  btidy rename /path/to/backup/2018
+  # Purge old trash
+  btidy purge --older-than 30d /path/to/backup
+  btidy purge --all --force /path/to/backup
 
-  # Preview flatten operation
-	  btidy flatten --dry-run /path/to/backup/2018
+  # Skip pre-operation manifest snapshot
+  btidy flatten --no-snapshot /path/to/backup
 
-  # Flatten directory structure (move all to root, remove duplicates by content hash)
-	  btidy flatten /path/to/backup/2018
-
-	  # Typical workflow: unzip, rename, flatten, deduplicate
-	  btidy unzip /path/to/backup/2018
-	  btidy rename /path/to/backup/2018
-	  btidy flatten /path/to/backup/2018
-	  btidy duplicate /path/to/backup/2018
-
-  # Safe workflow with verification
-	  btidy manifest /backup -o before.json
-	  btidy flatten /backup
-	  btidy manifest /backup -o after.json
-  # compare hashes between manifests
+  # Manual manifest workflow
+  btidy manifest /backup -o before.json
+  btidy flatten /backup
+  btidy manifest /backup -o after.json
 
 Safety:
-  The tool will NEVER modify files outside the specified directory.
-  The manifest output file must also resolve inside the target directory.
-  All operations are contained within the target path.`,
+  Files are never permanently deleted; they are moved to .btidy/trash/.
+  Every mutation is journaled to .btidy/journal/ for undo support.
+  A manifest snapshot is saved to .btidy/manifests/ before each operation.
+  Advisory file locking prevents concurrent btidy processes.
+  The tool will NEVER modify files outside the specified directory.`,
 	}
 
 	cmd.PersistentFlags().BoolVar(&dryRun, "dry-run", false, "Show what would be done without making changes")
