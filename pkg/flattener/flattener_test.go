@@ -309,6 +309,46 @@ func TestNew_InvalidRoot(t *testing.T) {
 	assert.Error(t, err)
 }
 
+func TestFlattener_FlattenFiles_DuplicatePreservedWhenKeptFileDisappears(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	modTime := time.Date(2018, 6, 15, 12, 0, 0, 0, time.UTC)
+	// Create two identical files in subdirectories.
+	keptFile := filepath.Join(tmpDir, "dir1", "file.txt")
+	dupeFile := filepath.Join(tmpDir, "dir2", "file.txt")
+	createTestFile(t, keptFile, "content", modTime)
+	createTestFile(t, dupeFile, "content", modTime)
+
+	files := collectFiles(t, tmpDir)
+	require.Len(t, files, 2)
+
+	f, err := New(tmpDir, false)
+	require.NoError(t, err)
+
+	// Pre-compute hashes (same as FlattenFiles does internally).
+	fileHashes, _ := f.computeHashes(files, nil)
+	seenHash := make(map[string]string)
+	nameCount := make(map[string]int)
+
+	// Process the first file (will be moved to root).
+	op1 := f.processFile(&files[0], fileHashes[files[0].Path], seenHash, nameCount)
+	require.NoError(t, op1.Error)
+	require.False(t, op1.Duplicate)
+
+	// Now delete the kept file to simulate it disappearing.
+	require.NoError(t, os.Remove(op1.NewPath))
+
+	// Process the second file — it has the same hash so it's a duplicate.
+	// The kept file no longer exists, so deletion should be refused.
+	op2 := f.processFile(&files[1], fileHashes[files[1].Path], seenHash, nameCount)
+	require.Error(t, op2.Error, "should refuse to delete duplicate when kept file is missing")
+	assert.True(t, op2.Duplicate)
+	assert.Contains(t, op2.Error.Error(), "kept file missing")
+
+	// The duplicate should still exist on disk.
+	assert.FileExists(t, dupeFile)
+}
+
 func TestFlattener_FlattenFiles_UnsafeSymlinkFailsBeforeMutations(t *testing.T) {
 	tmpDir := t.TempDir()
 

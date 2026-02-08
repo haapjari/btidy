@@ -216,15 +216,7 @@ func (f *Flattener) processFile(file *collector.FileInfo, hash string, seenHash 
 
 	// Check if this is a duplicate by content hash.
 	if existingPath, exists := seenHash[hash]; exists {
-		op.Duplicate = true
-		op.NewPath = existingPath // reference to the kept file
-
-		if !f.dryRun {
-			if err := f.validator.SafeRemove(file.Path); err != nil {
-				op.Error = fmt.Errorf("failed to delete duplicate: %w", err)
-			}
-		}
-		return op
+		return f.handleDuplicate(&op, file.Path, existingPath)
 	}
 
 	// Determine target path, handling name conflicts.
@@ -240,17 +232,39 @@ func (f *Flattener) processFile(file *collector.FileInfo, hash string, seenHash 
 		return op
 	}
 
-	// Mark this content hash as seen.
-	seenHash[hash] = op.NewPath
-
-	// Move the file using safe rename.
-	if !f.dryRun {
+	// Move the file using safe rename. Only track the hash after a successful
+	// rename so that seenHash never points to a non-existent file.
+	if f.dryRun {
+		seenHash[hash] = op.NewPath
+	} else {
 		if err := f.validator.SafeRename(file.Path, op.NewPath); err != nil {
 			op.Error = fmt.Errorf("failed to move: %w", err)
+			return op
 		}
+		seenHash[hash] = op.NewPath
 	}
 
 	return op
+}
+
+// handleDuplicate records a duplicate and optionally deletes it after verifying
+// the kept copy still exists.
+func (f *Flattener) handleDuplicate(op *MoveOperation, dupPath, existingPath string) MoveOperation {
+	op.Duplicate = true
+	op.NewPath = existingPath // reference to the kept file
+
+	if !f.dryRun {
+		// Verify the kept file still exists before deleting the duplicate.
+		if _, err := os.Lstat(existingPath); err != nil {
+			op.Error = fmt.Errorf("kept file missing, refusing to delete duplicate: %w", err)
+			return *op
+		}
+
+		if err := f.validator.SafeRemove(dupPath); err != nil {
+			op.Error = fmt.Errorf("failed to delete duplicate: %w", err)
+		}
+	}
+	return *op
 }
 
 // removeEmptyDirs removes all empty directories under rootDir.

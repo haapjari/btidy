@@ -697,6 +697,43 @@ func TestDeduplicator_FindDuplicates_KeepsDeterministically(t *testing.T) {
 	assert.Equal(t, "aaa.txt", entries[0].Name())
 }
 
+// Test that deleting a duplicate is refused when the kept (original) file has disappeared.
+func TestDeduplicator_DeleteFile_RefusesWhenKeptFileMissing(t *testing.T) {
+	tmpDir := setupTestDir(t)
+	defer os.RemoveAll(tmpDir)
+
+	modTime := time.Date(2018, 6, 15, 12, 0, 0, 0, time.UTC)
+
+	// Create the "duplicate" file that would be deleted.
+	dupPath := filepath.Join(tmpDir, "duplicate.txt")
+	createTestFile(t, dupPath, "same content", modTime)
+
+	// The "original" path that no longer exists on disk.
+	originalPath := filepath.Join(tmpDir, "original.txt")
+
+	v, err := safepath.New(tmpDir)
+	require.NoError(t, err)
+
+	d, err := NewWithValidator(v, false, 1)
+	require.NoError(t, err)
+
+	dupFile := collector.FileInfo{
+		Path:    dupPath,
+		Dir:     tmpDir,
+		Name:    "duplicate.txt",
+		Size:    int64(len("same content")),
+		ModTime: modTime,
+	}
+
+	op := d.deleteFile(dupFile, originalPath, "somehash")
+
+	require.Error(t, op.Error, "should error when kept file is missing")
+	assert.Contains(t, op.Error.Error(), "kept file missing", "error should mention kept file missing")
+
+	// Duplicate must still exist on disk.
+	assert.FileExists(t, dupPath, "duplicate must be preserved when kept file is gone")
+}
+
 func TestDeduplicator_FindDuplicates_UnsafeSymlinkFailsBeforeDeletes(t *testing.T) {
 	tmpDir := setupTestDir(t)
 	defer os.RemoveAll(tmpDir)

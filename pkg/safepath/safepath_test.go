@@ -316,6 +316,53 @@ func TestSafeRename(t *testing.T) {
 		assert.Error(t, v.SafeRename(outsideFile, dst))
 	})
 
+	t.Run("rename refuses to overwrite existing file", func(t *testing.T) {
+		t.Parallel()
+		tmpDir := t.TempDir()
+		src := filepath.Join(tmpDir, "source.txt")
+		dst := filepath.Join(tmpDir, "existing.txt")
+
+		require.NoError(t, os.WriteFile(src, []byte("source content"), 0o644))
+		require.NoError(t, os.WriteFile(dst, []byte("existing content"), 0o644))
+
+		v, err := safepath.New(tmpDir)
+		require.NoError(t, err)
+
+		err = v.SafeRename(src, dst)
+		require.Error(t, err, "SafeRename must refuse to overwrite existing file")
+		require.ErrorIs(t, err, safepath.ErrTargetExists)
+
+		// Both files must survive with original contents.
+		assert.FileExists(t, src)
+		assert.FileExists(t, dst)
+		srcData, _ := os.ReadFile(src)
+		dstData, _ := os.ReadFile(dst)
+		assert.Equal(t, "source content", string(srcData))
+		assert.Equal(t, "existing content", string(dstData))
+	})
+
+	t.Run("rename refuses to overwrite symlink", func(t *testing.T) {
+		t.Parallel()
+		tmpDir := t.TempDir()
+		src := filepath.Join(tmpDir, "source.txt")
+		target := filepath.Join(tmpDir, "target.txt")
+		link := filepath.Join(tmpDir, "link.txt")
+
+		require.NoError(t, os.WriteFile(src, []byte("source"), 0o644))
+		require.NoError(t, os.WriteFile(target, []byte("target"), 0o644))
+		if err := os.Symlink(target, link); err != nil {
+			t.Skip("symlinks not supported")
+		}
+
+		v, err := safepath.New(tmpDir)
+		require.NoError(t, err)
+
+		err = v.SafeRename(src, link)
+		require.Error(t, err, "SafeRename must refuse to overwrite symlink")
+		require.ErrorIs(t, err, safepath.ErrTargetExists)
+		assert.FileExists(t, src)
+	})
+
 	t.Run("rename through symlink outside root blocked", func(t *testing.T) {
 		t.Parallel()
 		baseDir := t.TempDir()

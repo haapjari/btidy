@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"os"
 	"path/filepath"
 	"sort"
@@ -178,6 +179,15 @@ func (u *Unzipper) processArchive(archivePath string) (operation ExtractOperatio
 		}
 	}
 
+	// Verify all extracted regular files exist with expected sizes before
+	// deleting the archive. This prevents data loss if extraction was partial.
+	if !u.dryRun {
+		if err := u.verifyExtractedFiles(reader.File, destinationDir); err != nil {
+			operation.Error = fmt.Errorf("post-extraction verification failed: %w", err)
+			return operation, nil
+		}
+	}
+
 	operation.ExtractionComplete = true
 	operation.DeletedArchive = true
 
@@ -191,6 +201,33 @@ func (u *Unzipper) processArchive(archivePath string) (operation ExtractOperatio
 	}
 
 	return operation, discovered
+}
+
+func (u *Unzipper) verifyExtractedFiles(entries []*zip.File, destinationDir string) error {
+	for _, file := range entries {
+		if isDirectoryEntry(file) || file.Mode()&os.ModeSymlink != 0 {
+			continue
+		}
+
+		entryPath, err := u.resolveEntryPath(destinationDir, file.Name)
+		if err != nil {
+			return fmt.Errorf("cannot resolve %q: %w", file.Name, err)
+		}
+
+		info, err := os.Lstat(entryPath)
+		if err != nil {
+			return fmt.Errorf("extracted file missing %q: %w", entryPath, err)
+		}
+
+		actualSize := info.Size()
+		expectedSize := file.UncompressedSize64
+		if actualSize < 0 || expectedSize > uint64(math.MaxInt64) || actualSize != int64(expectedSize) {
+			return fmt.Errorf("size mismatch for %q (expected %d, got %d)",
+				entryPath, file.UncompressedSize64, info.Size())
+		}
+	}
+
+	return nil
 }
 
 func (u *Unzipper) extractEntry(archivePath, destinationDir string, file *zip.File) (entryResult, error) {
@@ -301,10 +338,12 @@ func extractRegularFile(file *zip.File, destinationPath string) error {
 
 	if err := copyArchiveEntry(writer, reader, maxExtractedFileSize); err != nil {
 		_ = writer.Close()
+		_ = os.Remove(destinationPath) // Clean up partial file.
 		return fmt.Errorf("failed to write extracted file %q: %w", destinationPath, err)
 	}
 
 	if err := writer.Close(); err != nil {
+		_ = os.Remove(destinationPath) // Clean up potentially incomplete file.
 		return fmt.Errorf("failed to close extracted file %q: %w", destinationPath, err)
 	}
 

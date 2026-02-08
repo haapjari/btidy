@@ -9,6 +9,7 @@ package deduplicator
 import (
 	"errors"
 	"fmt"
+	"os"
 	"sort"
 
 	"btidy/pkg/collector"
@@ -298,6 +299,12 @@ func (d *Deduplicator) deleteFile(file collector.FileInfo, originalPath, hash st
 
 	// Perform deletion if not dry run.
 	if !d.dryRun {
+		// Verify the kept file still exists before deleting the duplicate.
+		if _, err := os.Lstat(originalPath); err != nil {
+			op.Error = fmt.Errorf("kept file missing, refusing to delete duplicate: %w", err)
+			return op
+		}
+
 		if err := d.validator.SafeRemove(file.Path); err != nil {
 			op.Error = fmt.Errorf("failed to delete: %w", err)
 		}

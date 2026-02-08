@@ -11,6 +11,7 @@ import (
 
 	"btidy/internal/testutil"
 	"btidy/pkg/collector"
+	"btidy/pkg/safepath"
 )
 
 // createTestFile creates a file with specific modification time.
@@ -475,4 +476,147 @@ func TestRenamer_Root(t *testing.T) {
 func TestNew_InvalidRoot(t *testing.T) {
 	_, err := New("/nonexistent/path/12345", false)
 	assert.Error(t, err)
+}
+
+// Test that a file modified between initial hash and deletion is NOT deleted.
+func TestRenamer_RenameFiles_RefusesDeleteWhenContentChanged(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	modTime := time.Date(2018, 6, 15, 12, 0, 0, 0, time.UTC)
+
+	// Create two files with identical content (will produce same sanitized name).
+	createTestFileWithContent(t, tmpDir, "Report.pdf", "same-content", modTime)
+	createTestFileWithContent(t, tmpDir, "report.pdf", "same-content", modTime)
+
+	files := collectFiles(t, tmpDir)
+	require.Len(t, files, 2)
+
+	// Mutate the second file after collection but before rename processing.
+	// Since the renamer hashes lazily per-file, we need to intercept between
+	// the first hash (in resolveNameConflict for the first file) and the
+	// re-hash (in markAsDuplicate for the second file).
+	// We can't intercept mid-processing easily, so instead test the
+	// markAsDuplicate method directly with a mismatched hash.
+
+	v, err := safepath.New(tmpDir)
+	require.NoError(t, err)
+
+	r, err := NewWithValidator(v, false)
+	require.NoError(t, err)
+
+	secondFile := files[1]
+	op := RenameOperation{
+		OriginalPath: secondFile.Path,
+		OriginalName: secondFile.Name,
+	}
+
+	// The kept file exists but the expectedHash won't match the actual file content.
+	r.markAsDuplicate(&op, secondFile, "bogus_hash_that_wont_match", files[0].Path)
+
+	require.Error(t, op.Error, "should error when re-hash doesn't match expected hash")
+	assert.Contains(t, op.Error.Error(), "file content changed",
+		"error should mention content changed")
+	assert.False(t, op.Deleted, "file should NOT be marked as deleted")
+
+	// File must still exist on disk.
+	assert.FileExists(t, secondFile.Path, "file must be preserved when content changed")
+}
+
+// Test that a missing kept file prevents duplicate deletion in the batch path.
+func TestRenamer_RenameFiles_RefusesDeleteWhenKeptFileMissing(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	modTime := time.Date(2018, 6, 15, 12, 0, 0, 0, time.UTC)
+	createTestFileWithContent(t, tmpDir, "report.pdf", "same-content", modTime)
+
+	v, err := safepath.New(tmpDir)
+	require.NoError(t, err)
+
+	r, err := NewWithValidator(v, false)
+	require.NoError(t, err)
+
+	dupPath := filepath.Join(tmpDir, "report.pdf")
+	info, err := os.Stat(dupPath)
+	require.NoError(t, err)
+
+	dupFile := collector.FileInfo{
+		Path:    dupPath,
+		Dir:     tmpDir,
+		Name:    "report.pdf",
+		Size:    info.Size(),
+		ModTime: info.ModTime(),
+	}
+
+	// Compute the real hash so re-hash would match if the Lstat check didn't fail first.
+	realHash, err := r.hasher.ComputeHash(dupPath)
+	require.NoError(t, err)
+
+	nonexistentKept := filepath.Join(tmpDir, "vanished.pdf")
+
+	op := RenameOperation{
+		OriginalPath: dupFile.Path,
+		OriginalName: dupFile.Name,
+	}
+	r.markAsDuplicate(&op, dupFile, realHash, nonexistentKept)
+
+	require.Error(t, op.Error, "should error when kept file is missing")
+	assert.Contains(t, op.Error.Error(), "kept file missing",
+		"error should mention kept file missing")
+	assert.False(t, op.Deleted, "file should NOT be marked as deleted")
+	assert.FileExists(t, dupPath, "duplicate must be preserved when kept file is gone")
+}
+
+// Test that handleExistingTarget refuses to delete source when target disappears.
+func TestRenamer_RenameFiles_RefusesDeleteWhenTargetDisappears(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	modTime := time.Date(2018, 6, 15, 12, 0, 0, 0, time.UTC)
+
+	// Create source and target with same content.
+	createTestFileWithContent(t, tmpDir, "My Doc.pdf", "test content", modTime)
+	createTestFileWithContent(t, tmpDir, "2018-06-15_my_doc.pdf", "test content", modTime)
+
+	sourcePath := filepath.Join(tmpDir, "My Doc.pdf")
+	targetPath := filepath.Join(tmpDir, "2018-06-15_my_doc.pdf")
+	info, err := os.Stat(sourcePath)
+	require.NoError(t, err)
+
+	// Remove the target before processing to simulate it disappearing.
+	require.NoError(t, os.Remove(targetPath))
+
+	v, err := safepath.New(tmpDir)
+	require.NoError(t, err)
+
+	r, err := NewWithValidator(v, false)
+	require.NoError(t, err)
+
+	// Manually construct the file info for just the source file, which will
+	// try to rename to the now-missing target path. Since the target no longer
+	// exists on disk, the lstat in processFile won't find it and the file
+	// will simply be renamed (no handleExistingTarget path).
+	// Instead, test the Lstat guard directly via handleExistingTarget.
+	targetInfo, err := os.Stat(sourcePath) // use source info as stand-in for size match
+	require.NoError(t, err)
+
+	op := RenameOperation{
+		OriginalPath: sourcePath,
+		OriginalName: "My Doc.pdf",
+		NewPath:      targetPath,
+		NewName:      "2018-06-15_my_doc.pdf",
+	}
+
+	sourceFile := collector.FileInfo{
+		Path:    sourcePath,
+		Dir:     tmpDir,
+		Name:    "My Doc.pdf",
+		Size:    info.Size(),
+		ModTime: info.ModTime(),
+	}
+
+	r.handleExistingTarget(&op, sourceFile, targetInfo)
+
+	// Source must be preserved regardless of which check caught the missing target.
+	require.Error(t, op.Error, "should error when target is gone")
+	assert.False(t, op.Deleted, "source should NOT be deleted")
+	assert.FileExists(t, sourcePath, "source must be preserved when target is gone")
 }

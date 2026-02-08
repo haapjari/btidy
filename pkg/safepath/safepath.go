@@ -20,6 +20,8 @@ var (
 	ErrSymlinkEscape = errors.New("symlink target escapes root directory")
 	// ErrInvalidRoot indicates the root path is invalid.
 	ErrInvalidRoot = errors.New("invalid root directory")
+	// ErrTargetExists indicates a rename target already exists.
+	ErrTargetExists = errors.New("target already exists")
 )
 
 // Validator ensures all paths are contained within a root directory.
@@ -147,12 +149,20 @@ func (v *Validator) ValidatePathForWrite(path string) error {
 }
 
 // SafeRename renames a file only if both source and destination are within root.
+// It refuses to overwrite an existing target to prevent silent data loss.
 func (v *Validator) SafeRename(oldPath, newPath string) error {
 	if err := v.validatePathForMutation(oldPath); err != nil {
 		return fmt.Errorf("source %w: %s", err, oldPath)
 	}
 	if err := v.validatePathForMutation(newPath); err != nil {
 		return fmt.Errorf("destination %w: %s", err, newPath)
+	}
+
+	// Refuse to overwrite an existing file or symlink.
+	if _, err := os.Lstat(newPath); err == nil {
+		return fmt.Errorf("%w: %s", ErrTargetExists, newPath)
+	} else if !os.IsNotExist(err) {
+		return fmt.Errorf("failed to check rename target: %w", err)
 	}
 
 	return os.Rename(oldPath, newPath)

@@ -51,6 +51,7 @@ type nameUsage struct {
 	count int
 	size  int64
 	hash  string
+	path  string // path of the kept file
 }
 
 // New creates a new Renamer with path containment validation.
@@ -209,6 +210,12 @@ func (r *Renamer) processFile(f collector.FileInfo, dirNames map[string]map[stri
 		}
 	}
 
+	// Update the tracked path so subsequent duplicate checks reference the actual location.
+	if usage, ok := dirNames[f.Dir][baseName]; ok {
+		usage.path = op.NewPath
+		dirNames[f.Dir][baseName] = usage
+	}
+
 	return op
 }
 
@@ -255,6 +262,7 @@ func (r *Renamer) resolveNameConflict(op *RenameOperation, f collector.FileInfo,
 			count: 1,
 			size:  f.Size,
 			hash:  hash,
+			path:  f.Path,
 		}
 		return baseName, false
 	}
@@ -262,7 +270,7 @@ func (r *Renamer) resolveNameConflict(op *RenameOperation, f collector.FileInfo,
 	if usage.size == f.Size {
 		currentHash, err := r.hasher.ComputeHash(f.Path)
 		if err == nil && usage.hash != "" && currentHash == usage.hash {
-			r.markAsDuplicate(op, f)
+			r.markAsDuplicate(op, f, usage.hash, usage.path)
 			return "", true
 		}
 	}
@@ -273,12 +281,32 @@ func (r *Renamer) resolveNameConflict(op *RenameOperation, f collector.FileInfo,
 	return newName, false
 }
 
-func (r *Renamer) markAsDuplicate(op *RenameOperation, f collector.FileInfo) {
+func (r *Renamer) markAsDuplicate(op *RenameOperation, f collector.FileInfo, expectedHash, keptPath string) {
 	op.Skipped = true
 	op.SkipReason = "duplicate file already exists"
 	op.Deleted = !r.dryRun
 
 	if r.dryRun {
+		return
+	}
+
+	// Verify the kept file still exists before deleting the duplicate.
+	if _, err := os.Lstat(keptPath); err != nil {
+		op.Error = fmt.Errorf("kept file missing, refusing to delete duplicate: %w", err)
+		op.Deleted = false
+		return
+	}
+
+	// Re-hash the file to confirm it hasn't changed since initial hash.
+	currentHash, err := r.hasher.ComputeHash(f.Path)
+	if err != nil {
+		op.Error = fmt.Errorf("cannot re-verify file before deletion: %w", err)
+		op.Deleted = false
+		return
+	}
+	if currentHash != expectedHash {
+		op.Error = errors.New("file content changed since hash was computed, refusing to delete")
+		op.Deleted = false
 		return
 	}
 
@@ -310,6 +338,12 @@ func (r *Renamer) handleExistingTarget(op *RenameOperation, f collector.FileInfo
 	op.SkipReason = "duplicate file already exists"
 
 	if r.dryRun {
+		return
+	}
+
+	// Verify target still exists before deleting source.
+	if _, err := os.Lstat(op.NewPath); err != nil {
+		op.Error = fmt.Errorf("target file missing, refusing to delete source: %w", err)
 		return
 	}
 
