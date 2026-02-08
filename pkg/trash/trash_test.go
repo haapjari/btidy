@@ -1,0 +1,223 @@
+package trash
+
+import (
+	"os"
+	"path/filepath"
+	"testing"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+
+	"btidy/internal/testutil"
+	"btidy/pkg/metadata"
+	"btidy/pkg/safepath"
+)
+
+func setup(t *testing.T) (string, *metadata.Dir, *safepath.Validator) {
+	t.Helper()
+
+	root := t.TempDir()
+	v, err := safepath.New(root)
+	require.NoError(t, err)
+
+	metaDir, err := metadata.Init(root, v)
+	require.NoError(t, err)
+
+	return root, metaDir, v
+}
+
+func TestNew_CreatesTrashDirectory(t *testing.T) {
+	t.Parallel()
+
+	root, metaDir, v := setup(t)
+
+	trasher, err := New(metaDir, "flatten-20260208T143022", v)
+	require.NoError(t, err)
+
+	expectedDir := filepath.Join(root, ".btidy", "trash", "flatten-20260208T143022")
+	assert.Equal(t, expectedDir, trasher.trashRoot)
+
+	info, err := os.Stat(expectedDir)
+	require.NoError(t, err, "trash directory should exist")
+	assert.True(t, info.IsDir(), "trash directory should be a directory")
+}
+
+func TestTrash_MovesFileToTrash(t *testing.T) {
+	t.Parallel()
+
+	root, metaDir, v := setup(t)
+
+	filePath := filepath.Join(root, "docs", "report.pdf")
+	testutil.CreateFile(t, filePath, "report content")
+
+	trasher, err := New(metaDir, "run1", v)
+	require.NoError(t, err)
+
+	err = trasher.Trash(filePath)
+	require.NoError(t, err)
+
+	// Original should be gone.
+	_, err = os.Stat(filePath)
+	assert.True(t, os.IsNotExist(err), "original file should not exist")
+
+	// Should be in trash preserving relative structure.
+	trashedPath := filepath.Join(root, ".btidy", "trash", "run1", "docs", "report.pdf")
+	content, err := os.ReadFile(trashedPath)
+	require.NoError(t, err)
+	assert.Equal(t, "report content", string(content))
+}
+
+func TestTrashPath_PreviewsDestination(t *testing.T) {
+	t.Parallel()
+
+	root, metaDir, v := setup(t)
+
+	filePath := filepath.Join(root, "sub", "file.txt")
+	testutil.CreateFile(t, filePath, "content")
+
+	trasher, err := New(metaDir, "run1", v)
+	require.NoError(t, err)
+
+	dest, err := trasher.TrashPath(filePath)
+	require.NoError(t, err)
+
+	expected := filepath.Join(root, ".btidy", "trash", "run1", "sub", "file.txt")
+	assert.Equal(t, expected, dest)
+}
+
+func TestRestore_MovesFileBack(t *testing.T) {
+	t.Parallel()
+
+	root, metaDir, v := setup(t)
+
+	filePath := filepath.Join(root, "data", "notes.txt")
+	testutil.CreateFile(t, filePath, "my notes")
+
+	trasher, err := New(metaDir, "run1", v)
+	require.NoError(t, err)
+
+	err = trasher.Trash(filePath)
+	require.NoError(t, err)
+
+	trashedPath := filepath.Join(root, ".btidy", "trash", "run1", "data", "notes.txt")
+	err = trasher.Restore(trashedPath)
+	require.NoError(t, err)
+
+	// Original should be back.
+	content, err := os.ReadFile(filePath)
+	require.NoError(t, err)
+	assert.Equal(t, "my notes", string(content))
+
+	// Trashed copy should be gone.
+	_, err = os.Stat(trashedPath)
+	assert.True(t, os.IsNotExist(err), "trashed file should be removed after restore")
+}
+
+func TestTrashAndRestore_RoundTrip(t *testing.T) {
+	t.Parallel()
+
+	root, metaDir, v := setup(t)
+
+	files := map[string]string{
+		filepath.Join(root, "a.txt"):         "alpha",
+		filepath.Join(root, "sub", "b.txt"):  "beta",
+		filepath.Join(root, "deep", "c.txt"): "gamma",
+	}
+
+	for path, content := range files {
+		testutil.CreateFile(t, path, content)
+	}
+
+	trasher, err := New(metaDir, "roundtrip", v)
+	require.NoError(t, err)
+
+	// Trash all files.
+	for path := range files {
+		trashErr := trasher.Trash(path)
+		require.NoError(t, trashErr)
+	}
+
+	// All originals should be gone.
+	for path := range files {
+		_, statErr := os.Stat(path)
+		assert.True(t, os.IsNotExist(statErr), "original should not exist: %s", path)
+	}
+
+	// Restore all.
+	err = trasher.RestoreAll()
+	require.NoError(t, err)
+
+	// All originals should be back with correct content.
+	for path, expectedContent := range files {
+		content, err := os.ReadFile(path)
+		require.NoError(t, err, "restored file should exist: %s", path)
+		assert.Equal(t, expectedContent, string(content), "restored content mismatch: %s", path)
+	}
+}
+
+func TestPurge_PermanentlyDeletesTrash(t *testing.T) {
+	t.Parallel()
+
+	root, metaDir, v := setup(t)
+
+	filePath := filepath.Join(root, "file.txt")
+	testutil.CreateFile(t, filePath, "content")
+
+	trasher, err := New(metaDir, "purge-run", v)
+	require.NoError(t, err)
+
+	err = trasher.Trash(filePath)
+	require.NoError(t, err)
+
+	trashDir := filepath.Join(root, ".btidy", "trash", "purge-run")
+	_, err = os.Stat(trashDir)
+	require.NoError(t, err, "trash directory should exist before purge")
+
+	err = trasher.Purge()
+	require.NoError(t, err)
+
+	_, err = os.Stat(trashDir)
+	assert.True(t, os.IsNotExist(err), "trash directory should not exist after purge")
+}
+
+func TestTrash_PreservesDirectoryStructure(t *testing.T) {
+	t.Parallel()
+
+	root, metaDir, v := setup(t)
+
+	// Create a nested file.
+	deepPath := filepath.Join(root, "a", "b", "c", "deep.txt")
+	testutil.CreateFile(t, deepPath, "deep content")
+
+	trasher, err := New(metaDir, "struct-run", v)
+	require.NoError(t, err)
+
+	err = trasher.Trash(deepPath)
+	require.NoError(t, err)
+
+	// Verify the structure is preserved in trash.
+	trashedPath := filepath.Join(root, ".btidy", "trash", "struct-run", "a", "b", "c", "deep.txt")
+	content, err := os.ReadFile(trashedPath)
+	require.NoError(t, err)
+	assert.Equal(t, "deep content", string(content))
+}
+
+func TestTrash_RootLevelFile(t *testing.T) {
+	t.Parallel()
+
+	root, metaDir, v := setup(t)
+
+	filePath := filepath.Join(root, "rootfile.txt")
+	testutil.CreateFile(t, filePath, "root content")
+
+	trasher, err := New(metaDir, "root-run", v)
+	require.NoError(t, err)
+
+	err = trasher.Trash(filePath)
+	require.NoError(t, err)
+
+	trashedPath := filepath.Join(root, ".btidy", "trash", "root-run", "rootfile.txt")
+	content, err := os.ReadFile(trashedPath)
+	require.NoError(t, err)
+	assert.Equal(t, "root content", string(content))
+}
