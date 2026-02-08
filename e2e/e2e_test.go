@@ -909,7 +909,6 @@ func TestEndToEndBtidyDir_NeverCollected(t *testing.T) {
 	modTime := time.Date(2024, 6, 1, 10, 0, 0, 0, time.UTC)
 
 	// Create a .btidy directory with files that should never be touched.
-	writeFile(t, filepath.Join(root, ".btidy", "lock"), "lockfile", modTime)
 	writeFile(t, filepath.Join(root, ".btidy", "trash", "run1", "trashed.txt"), "trashed", modTime)
 	writeFile(t, filepath.Join(root, "normal.txt"), "normal content", modTime)
 
@@ -917,8 +916,7 @@ func TestEndToEndBtidyDir_NeverCollected(t *testing.T) {
 	renameResult := runBinary(t, binPath, "rename", root)
 	assertCommandSucceeded(t, "rename with .btidy dir", renameResult)
 
-	// Verify .btidy files are untouched.
-	assertExists(t, filepath.Join(root, ".btidy", "lock"))
+	// Verify .btidy trash files are untouched.
 	assertExists(t, filepath.Join(root, ".btidy", "trash", "run1", "trashed.txt"))
 
 	// Verify output says 1 file found (not 3).

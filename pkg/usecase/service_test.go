@@ -12,6 +12,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"btidy/internal/testutil"
+	"btidy/pkg/filelock"
 	"btidy/pkg/manifest"
 )
 
@@ -430,4 +431,63 @@ func TestService_RunRename_GeneratesSnapshot(t *testing.T) {
 	m, err := manifest.Load(execution.SnapshotPath)
 	require.NoError(t, err)
 	assert.Equal(t, 1, m.FileCount())
+}
+
+func TestService_RunDuplicate_LockReleasedAfterWorkflow(t *testing.T) {
+	t.Parallel()
+
+	tmpDir := t.TempDir()
+	modTime := time.Date(2018, 6, 15, 12, 0, 0, 0, time.UTC)
+	testutil.CreateFileWithModTime(t, filepath.Join(tmpDir, "a.txt"), "same-content", modTime)
+	testutil.CreateFileWithModTime(t, filepath.Join(tmpDir, "b.txt"), "same-content", modTime)
+
+	s := New(Options{NoSnapshot: true})
+
+	// First run should succeed.
+	_, err := s.RunDuplicate(DuplicateRequest{
+		TargetDir: tmpDir,
+		DryRun:    true,
+		Workers:   2,
+	})
+	require.NoError(t, err)
+
+	// Lock should be released — second run on same directory should succeed.
+	_, err = s.RunDuplicate(DuplicateRequest{
+		TargetDir: tmpDir,
+		DryRun:    true,
+		Workers:   2,
+	})
+	require.NoError(t, err, "second run should succeed after lock is released")
+
+	// Lock file should be cleaned up.
+	_, err = os.Stat(filepath.Join(tmpDir, ".btidy", "lock"))
+	assert.True(t, os.IsNotExist(err), "lock file should be removed after workflow")
+}
+
+func TestService_RunRename_LockPreventsConflict(t *testing.T) {
+	t.Parallel()
+
+	tmpDir := t.TempDir()
+	modTime := time.Date(2018, 6, 15, 12, 0, 0, 0, time.UTC)
+	testutil.CreateFileWithModTime(t, filepath.Join(tmpDir, "file.txt"), "content", modTime)
+
+	// Manually acquire the lock to simulate a concurrent btidy process.
+	metaDir := filepath.Join(tmpDir, ".btidy")
+	require.NoError(t, os.MkdirAll(metaDir, 0o755))
+	lockPath := filepath.Join(metaDir, "lock")
+
+	lock, err := filelock.Acquire(lockPath)
+	require.NoError(t, err, "manual lock acquisition should succeed")
+
+	t.Cleanup(func() {
+		_ = lock.Close()
+	})
+
+	s := New(Options{NoSnapshot: true})
+	_, err = s.RunRename(RenameRequest{
+		TargetDir: tmpDir,
+		DryRun:    true,
+	})
+	require.Error(t, err, "should fail when lock is held")
+	assert.Contains(t, err.Error(), "another btidy process")
 }

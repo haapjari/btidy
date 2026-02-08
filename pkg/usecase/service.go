@@ -11,6 +11,7 @@ import (
 
 	"btidy/pkg/collector"
 	"btidy/pkg/deduplicator"
+	"btidy/pkg/filelock"
 	"btidy/pkg/flattener"
 	"btidy/pkg/manifest"
 	"btidy/pkg/metadata"
@@ -337,6 +338,13 @@ func runFileWorkflow[T any](s *Service, targetDir, command string, dryRun bool, 
 		return fileWorkflowResult[T]{}, err
 	}
 
+	// Acquire advisory lock to prevent concurrent btidy processes on the same directory.
+	lock, lockErr := acquireWorkflowLock(target)
+	if lockErr != nil {
+		return fileWorkflowResult[T]{}, lockErr
+	}
+	defer lock.Close()
+
 	files, collectDuration, err := s.collectFiles(target.rootDir)
 	if err != nil {
 		return fileWorkflowResult[T]{}, fmt.Errorf("failed to collect files: %w", err)
@@ -540,7 +548,10 @@ func (s *Service) skipFileList() []string {
 }
 
 func (s *Service) skipDirList() []string {
-	return append([]string(nil), s.skipDirs...)
+	dirs := append([]string(nil), s.skipDirs...)
+	// Always skip the .btidy metadata directory regardless of caller configuration.
+	dirs = append(dirs, metadata.DirName)
+	return dirs
 }
 
 // generateSnapshot creates a pre-operation manifest in .btidy/manifests/.
@@ -597,6 +608,22 @@ func resolveWorkflowTarget(targetDir string) (workflowTarget, error) {
 		rootDir:   validator.Root(),
 		validator: validator,
 	}, nil
+}
+
+// acquireWorkflowLock initializes the metadata directory and acquires an
+// advisory file lock to prevent concurrent btidy processes on the same target.
+func acquireWorkflowLock(target workflowTarget) (*filelock.Lock, error) {
+	metaDir, err := metadata.Init(target.rootDir, target.validator)
+	if err != nil {
+		return nil, fmt.Errorf("initialize metadata for lock: %w", err)
+	}
+
+	lock, lockErr := filelock.Acquire(metaDir.LockPath())
+	if lockErr != nil {
+		return nil, fmt.Errorf("another btidy process is operating on this directory: %w", lockErr)
+	}
+
+	return lock, nil
 }
 
 func resolveManifestOutputPath(target workflowTarget, outputPath string) (string, error) {
