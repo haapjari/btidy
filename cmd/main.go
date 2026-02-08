@@ -11,6 +11,7 @@ func main() {
 	rootCmd.AddCommand(buildManifestCommand())
 	rootCmd.AddCommand(buildOrganizeCommand())
 	rootCmd.AddCommand(buildUndoCommand())
+	rootCmd.AddCommand(buildPurgeCommand())
 
 	if err := rootCmd.Execute(); err != nil {
 		os.Exit(1)

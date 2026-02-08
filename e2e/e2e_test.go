@@ -1052,3 +1052,113 @@ func TestEndToEndUndo_NoJournalError(t *testing.T) {
 	undoResult := runBinary(t, binPath, "undo", root)
 	assertCommandFailed(t, undoResult, "journal")
 }
+
+func TestEndToEndPurge_PurgesAfterDuplicate(t *testing.T) {
+	binPath := binaryPath(t)
+	root := t.TempDir()
+	modTime := time.Date(2024, 8, 1, 10, 0, 0, 0, time.UTC)
+
+	writeFile(t, filepath.Join(root, "a.txt"), "same-content", modTime)
+	writeFile(t, filepath.Join(root, "b.txt"), "same-content", modTime)
+	writeFile(t, filepath.Join(root, "unique.txt"), "unique", modTime)
+
+	// Run duplicate to trash one file.
+	dupResult := runBinary(t, binPath, "--workers", "1", "--no-snapshot", "duplicate", root)
+	assertCommandSucceeded(t, "duplicate", dupResult)
+
+	// Verify trash exists.
+	trashRoot := filepath.Join(root, ".btidy", "trash")
+	assertExists(t, trashRoot)
+
+	// Dry-run purge should list runs but not delete.
+	dryResult := runBinary(t, binPath, "purge", "--dry-run", "--all", root)
+	assertCommandSucceeded(t, "purge dry-run", dryResult)
+	if !strings.Contains(dryResult.stdout, "WOULD PURGE") {
+		t.Fatalf("expected 'WOULD PURGE' in dry-run output\n%s", dryResult.stdout)
+	}
+
+	// Trash should still exist.
+	trashEntries, err := os.ReadDir(trashRoot)
+	if err != nil {
+		t.Fatalf("failed to read trash directory: %v", err)
+	}
+	if len(trashEntries) == 0 {
+		t.Fatal("trash should still exist after dry-run purge")
+	}
+
+	// Actually purge.
+	purgeResult := runBinary(t, binPath, "purge", "--all", root)
+	assertCommandSucceeded(t, "purge all", purgeResult)
+
+	if !strings.Contains(purgeResult.stdout, "Purged:    1 run(s)") {
+		t.Fatalf("expected 'Purged:    1 run(s)' in output\n%s", purgeResult.stdout)
+	}
+
+	// Trash directory should be empty now.
+	trashEntries, err = os.ReadDir(trashRoot)
+	if err != nil {
+		t.Fatalf("failed to read trash directory after purge: %v", err)
+	}
+	if len(trashEntries) != 0 {
+		t.Fatalf("expected empty trash directory, got %d entries", len(trashEntries))
+	}
+}
+
+func TestEndToEndPurge_RequiresFilter(t *testing.T) {
+	binPath := binaryPath(t)
+	root := t.TempDir()
+	modTime := time.Date(2024, 8, 2, 10, 0, 0, 0, time.UTC)
+
+	writeFile(t, filepath.Join(root, "file.txt"), "content", modTime)
+
+	// Purge without any filter flag should fail.
+	result := runBinary(t, binPath, "purge", root)
+	assertCommandFailed(t, result, "at least one")
+}
+
+func TestEndToEndPurge_NoTrash(t *testing.T) {
+	binPath := binaryPath(t)
+	root := t.TempDir()
+	modTime := time.Date(2024, 8, 3, 10, 0, 0, 0, time.UTC)
+
+	writeFile(t, filepath.Join(root, "file.txt"), "content", modTime)
+
+	// Purge --all with no trash should succeed with empty output.
+	result := runBinary(t, binPath, "purge", "--all", root)
+	assertCommandSucceeded(t, "purge no trash", result)
+
+	if !strings.Contains(result.stdout, "No trash runs found") {
+		t.Fatalf("expected 'No trash runs found' in output\n%s", result.stdout)
+	}
+}
+
+func TestEndToEndPurge_OlderThanFilter(t *testing.T) {
+	binPath := binaryPath(t)
+	root := t.TempDir()
+	modTime := time.Date(2024, 8, 4, 10, 0, 0, 0, time.UTC)
+
+	writeFile(t, filepath.Join(root, "a.txt"), "same-content", modTime)
+	writeFile(t, filepath.Join(root, "b.txt"), "same-content", modTime)
+
+	// Run duplicate to trash one file.
+	dupResult := runBinary(t, binPath, "--workers", "1", "--no-snapshot", "duplicate", root)
+	assertCommandSucceeded(t, "duplicate", dupResult)
+
+	// Purge with --older-than 1000h (trash is seconds old, won't match).
+	result := runBinary(t, binPath, "purge", "--older-than", "1000h", root)
+	assertCommandSucceeded(t, "purge older-than", result)
+
+	if !strings.Contains(result.stdout, "Purged:    0 run(s)") {
+		t.Fatalf("expected 'Purged:    0 run(s)' in output\n%s", result.stdout)
+	}
+
+	// Verify trash still exists.
+	trashRoot := filepath.Join(root, ".btidy", "trash")
+	trashEntries, err := os.ReadDir(trashRoot)
+	if err != nil {
+		t.Fatalf("failed to read trash directory: %v", err)
+	}
+	if len(trashEntries) == 0 {
+		t.Fatal("trash should still exist after older-than filter")
+	}
+}

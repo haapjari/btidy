@@ -1192,3 +1192,204 @@ func extractRunID(journalPath string) string {
 	base := filepath.Base(journalPath)
 	return strings.TrimSuffix(base, ".jsonl")
 }
+
+// PurgeRequest contains inputs for the purge workflow.
+type PurgeRequest struct {
+	TargetDir  string
+	RunID      string        // purge a specific run's trash
+	OlderThan  time.Duration // only purge runs older than this duration
+	All        bool          // purge all trash runs
+	DryRun     bool
+	OnProgress ProgressCallback
+}
+
+// TrashRunInfo describes a single trash run's metadata for display.
+type TrashRunInfo struct {
+	RunID     string
+	Path      string
+	FileCount int
+	TotalSize int64
+	Age       time.Duration
+	ModTime   time.Time
+}
+
+// PurgeOperation describes the result of purging a single trash run.
+type PurgeOperation struct {
+	RunID     string
+	Path      string
+	FileCount int
+	TotalSize int64
+	Purged    bool
+	Error     error
+}
+
+// PurgeExecution contains purge workflow outputs.
+type PurgeExecution struct {
+	RootDir     string
+	Runs        []TrashRunInfo
+	Operations  []PurgeOperation
+	PurgedCount int
+	PurgedSize  int64
+	ErrorCount  int
+	DryRun      bool
+}
+
+// RunPurge permanently deletes trashed files based on filter criteria.
+func (s *Service) RunPurge(req PurgeRequest) (PurgeExecution, error) {
+	target, err := resolveWorkflowTarget(req.TargetDir)
+	if err != nil {
+		return PurgeExecution{}, err
+	}
+
+	lock, lockErr := acquireWorkflowLock(target)
+	if lockErr != nil {
+		return PurgeExecution{}, lockErr
+	}
+	defer lock.Close()
+
+	metaDir, initErr := metadata.Init(target.rootDir, target.validator)
+	if initErr != nil {
+		return PurgeExecution{}, fmt.Errorf("initialize metadata: %w", initErr)
+	}
+
+	runs, listErr := listTrashRuns(metaDir)
+	if listErr != nil {
+		return PurgeExecution{}, listErr
+	}
+
+	exec := PurgeExecution{
+		RootDir: target.rootDir,
+		Runs:    runs,
+		DryRun:  req.DryRun,
+	}
+
+	filtered := filterTrashRuns(runs, req)
+	for i, run := range filtered {
+		op := purgeRun(run, req.DryRun)
+		exec.Operations = append(exec.Operations, op)
+
+		if op.Error != nil {
+			exec.ErrorCount++
+		} else if op.Purged {
+			exec.PurgedCount++
+			exec.PurgedSize += op.TotalSize
+		}
+
+		progress.EmitStage(req.OnProgress, "purging", i+1, len(filtered))
+	}
+
+	return exec, nil
+}
+
+// listTrashRuns enumerates all trash run directories under .btidy/trash/.
+func listTrashRuns(metaDir *metadata.Dir) ([]TrashRunInfo, error) {
+	trashRoot := filepath.Join(metaDir.Root(), "trash")
+
+	dirEntries, readErr := os.ReadDir(trashRoot)
+	if readErr != nil {
+		if os.IsNotExist(readErr) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("read trash directory: %w", readErr)
+	}
+
+	now := time.Now()
+	var runs []TrashRunInfo
+	for _, entry := range dirEntries {
+		if !entry.IsDir() {
+			continue
+		}
+
+		runPath := filepath.Join(trashRoot, entry.Name())
+		fileCount, totalSize := walkTrashDir(runPath)
+
+		info, infoErr := entry.Info()
+		var modTime time.Time
+		if infoErr == nil {
+			modTime = info.ModTime()
+		}
+
+		runs = append(runs, TrashRunInfo{
+			RunID:     entry.Name(),
+			Path:      runPath,
+			FileCount: fileCount,
+			TotalSize: totalSize,
+			Age:       now.Sub(modTime),
+			ModTime:   modTime,
+		})
+	}
+
+	sort.Slice(runs, func(i, j int) bool {
+		return runs[i].RunID < runs[j].RunID
+	})
+
+	return runs, nil
+}
+
+// walkTrashDir counts files and total size in a trash run directory.
+func walkTrashDir(dirPath string) (fileCount int, totalSize int64) {
+	walkErr := filepath.Walk(dirPath, func(_ string, info os.FileInfo, err error) error {
+		if err != nil || info.IsDir() {
+			return err
+		}
+		fileCount++
+		totalSize += info.Size()
+		return nil
+	})
+	if walkErr != nil {
+		return 0, 0
+	}
+	return fileCount, totalSize
+}
+
+// filterTrashRuns selects trash runs matching the purge request criteria.
+func filterTrashRuns(runs []TrashRunInfo, req PurgeRequest) []TrashRunInfo {
+	if req.RunID != "" {
+		for i := range runs {
+			if runs[i].RunID == req.RunID {
+				return []TrashRunInfo{runs[i]}
+			}
+		}
+		return nil
+	}
+
+	if req.All {
+		return runs
+	}
+
+	if req.OlderThan > 0 {
+		var filtered []TrashRunInfo
+		for i := range runs {
+			if runs[i].Age > req.OlderThan {
+				filtered = append(filtered, runs[i])
+			}
+		}
+		return filtered
+	}
+
+	// No filter specified — return nothing (require explicit filter).
+	return nil
+}
+
+// purgeRun permanently deletes a single trash run directory.
+func purgeRun(run TrashRunInfo, dryRun bool) PurgeOperation {
+	op := PurgeOperation{
+		RunID:     run.RunID,
+		Path:      run.Path,
+		FileCount: run.FileCount,
+		TotalSize: run.TotalSize,
+	}
+
+	if dryRun {
+		op.Purged = true
+		return op
+	}
+
+	if removeErr := os.RemoveAll(run.Path); removeErr != nil {
+		op.Error = fmt.Errorf("remove trash directory: %w", removeErr)
+		return op
+	}
+
+	op.Purged = true
+	return op
+}

@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -921,6 +922,224 @@ func TestService_RunUndo_NoJournalError(t *testing.T) {
 	})
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "no journals found")
+}
+
+func TestService_RunPurge_PurgesSpecificRun(t *testing.T) {
+	t.Parallel()
+
+	tmpDir := t.TempDir()
+	modTime := time.Date(2018, 6, 15, 12, 0, 0, 0, time.UTC)
+	testutil.CreateFileWithModTime(t, filepath.Join(tmpDir, "a.txt"), "same-content", modTime)
+	testutil.CreateFileWithModTime(t, filepath.Join(tmpDir, "b.txt"), "same-content", modTime)
+
+	s := New(Options{NoSnapshot: true})
+
+	// Run duplicate to trash one file.
+	dupExec, err := s.RunDuplicate(DuplicateRequest{
+		TargetDir: tmpDir,
+		DryRun:    false,
+		Workers:   2,
+	})
+	require.NoError(t, err)
+	assert.Equal(t, 1, dupExec.Result.DeletedCount)
+
+	// Find the trash run ID from the journal.
+	reader := journal.NewReader(dupExec.JournalPath)
+	entries, err := reader.Entries()
+	require.NoError(t, err)
+	require.Len(t, entries, 1)
+
+	// The trash dest is like ".btidy/trash/<run-id>/b.txt" — extract run ID.
+	trashDest := entries[0].Dest
+	trashParts := strings.SplitN(trashDest, string(filepath.Separator), 4)
+	require.GreaterOrEqual(t, len(trashParts), 3, "expected .btidy/trash/<run-id>/...")
+	trashRunID := trashParts[2]
+
+	// Verify trash directory exists.
+	trashDir := filepath.Join(tmpDir, ".btidy", "trash", trashRunID)
+	_, err = os.Stat(trashDir)
+	require.NoError(t, err, "trash directory should exist before purge")
+
+	// Purge the specific run.
+	purgeExec, err := s.RunPurge(PurgeRequest{
+		TargetDir: tmpDir,
+		RunID:     trashRunID,
+		DryRun:    false,
+	})
+	require.NoError(t, err)
+
+	assert.Equal(t, 1, purgeExec.PurgedCount)
+	assert.Equal(t, 0, purgeExec.ErrorCount)
+	assert.Positive(t, purgeExec.PurgedSize)
+
+	// Verify trash directory is gone.
+	_, err = os.Stat(trashDir)
+	assert.True(t, os.IsNotExist(err), "trash directory should be removed after purge")
+}
+
+func TestService_RunPurge_DryRunDoesNotDelete(t *testing.T) {
+	t.Parallel()
+
+	tmpDir := t.TempDir()
+	modTime := time.Date(2018, 6, 15, 12, 0, 0, 0, time.UTC)
+	testutil.CreateFileWithModTime(t, filepath.Join(tmpDir, "a.txt"), "same-content", modTime)
+	testutil.CreateFileWithModTime(t, filepath.Join(tmpDir, "b.txt"), "same-content", modTime)
+
+	s := New(Options{NoSnapshot: true})
+
+	// Run duplicate to trash one file.
+	_, err := s.RunDuplicate(DuplicateRequest{
+		TargetDir: tmpDir,
+		DryRun:    false,
+		Workers:   2,
+	})
+	require.NoError(t, err)
+
+	// Purge all in dry-run mode.
+	purgeExec, err := s.RunPurge(PurgeRequest{
+		TargetDir: tmpDir,
+		All:       true,
+		DryRun:    true,
+	})
+	require.NoError(t, err)
+
+	assert.True(t, purgeExec.DryRun)
+	assert.Equal(t, 1, purgeExec.PurgedCount, "dry-run should report what would be purged")
+	assert.Positive(t, purgeExec.PurgedSize)
+
+	// Verify trash directory still exists.
+	trashRoot := filepath.Join(tmpDir, ".btidy", "trash")
+	dirEntries, readErr := os.ReadDir(trashRoot)
+	require.NoError(t, readErr)
+	assert.Len(t, dirEntries, 1, "trash directory should still exist after dry-run")
+}
+
+func TestService_RunPurge_PurgesAll(t *testing.T) {
+	t.Parallel()
+
+	tmpDir := t.TempDir()
+	modTime := time.Date(2018, 6, 15, 12, 0, 0, 0, time.UTC)
+	testutil.CreateFileWithModTime(t, filepath.Join(tmpDir, "a.txt"), "same-content", modTime)
+	testutil.CreateFileWithModTime(t, filepath.Join(tmpDir, "b.txt"), "same-content", modTime)
+
+	s := New(Options{NoSnapshot: true})
+
+	// Run duplicate to trash one file.
+	_, err := s.RunDuplicate(DuplicateRequest{
+		TargetDir: tmpDir,
+		DryRun:    false,
+		Workers:   2,
+	})
+	require.NoError(t, err)
+
+	// Purge all.
+	purgeExec, err := s.RunPurge(PurgeRequest{
+		TargetDir: tmpDir,
+		All:       true,
+		DryRun:    false,
+	})
+	require.NoError(t, err)
+
+	assert.Equal(t, 1, purgeExec.PurgedCount)
+	assert.Equal(t, 0, purgeExec.ErrorCount)
+
+	// Verify trash directory is empty.
+	trashRoot := filepath.Join(tmpDir, ".btidy", "trash")
+	dirEntries, readErr := os.ReadDir(trashRoot)
+	require.NoError(t, readErr)
+	assert.Empty(t, dirEntries, "all trash runs should be removed")
+}
+
+func TestService_RunPurge_NoTrashReturnsEmpty(t *testing.T) {
+	t.Parallel()
+
+	tmpDir := t.TempDir()
+	testutil.CreateFileWithModTime(t, filepath.Join(tmpDir, "file.txt"), "content",
+		time.Date(2018, 6, 15, 12, 0, 0, 0, time.UTC))
+
+	s := New(Options{NoSnapshot: true})
+
+	purgeExec, err := s.RunPurge(PurgeRequest{
+		TargetDir: tmpDir,
+		All:       true,
+		DryRun:    false,
+	})
+	require.NoError(t, err)
+
+	assert.Empty(t, purgeExec.Runs)
+	assert.Empty(t, purgeExec.Operations)
+	assert.Equal(t, 0, purgeExec.PurgedCount)
+}
+
+func TestService_RunPurge_OlderThanFilter(t *testing.T) {
+	t.Parallel()
+
+	tmpDir := t.TempDir()
+	modTime := time.Date(2018, 6, 15, 12, 0, 0, 0, time.UTC)
+	testutil.CreateFileWithModTime(t, filepath.Join(tmpDir, "a.txt"), "same-content", modTime)
+	testutil.CreateFileWithModTime(t, filepath.Join(tmpDir, "b.txt"), "same-content", modTime)
+
+	s := New(Options{NoSnapshot: true})
+
+	// Run duplicate to trash one file.
+	_, err := s.RunDuplicate(DuplicateRequest{
+		TargetDir: tmpDir,
+		DryRun:    false,
+		Workers:   2,
+	})
+	require.NoError(t, err)
+
+	// Purge with OlderThan = 1000 hours (the trash is seconds old, so it won't match).
+	purgeExec, err := s.RunPurge(PurgeRequest{
+		TargetDir: tmpDir,
+		OlderThan: 1000 * time.Hour,
+		DryRun:    false,
+	})
+	require.NoError(t, err)
+
+	assert.Equal(t, 0, purgeExec.PurgedCount, "nothing should match older-than filter")
+	assert.Len(t, purgeExec.Runs, 1, "should still list existing runs")
+
+	// Purge with OlderThan = 0 seconds (everything is older than 0s effectively, but
+	// we need Age > OlderThan, and OlderThan = 1ns should match anything).
+	purgeExec2, err := s.RunPurge(PurgeRequest{
+		TargetDir: tmpDir,
+		OlderThan: time.Nanosecond,
+		DryRun:    false,
+	})
+	require.NoError(t, err)
+
+	assert.Equal(t, 1, purgeExec2.PurgedCount, "trash older than 1ns should be purged")
+}
+
+func TestService_RunPurge_NoFilterReturnsNothing(t *testing.T) {
+	t.Parallel()
+
+	tmpDir := t.TempDir()
+	modTime := time.Date(2018, 6, 15, 12, 0, 0, 0, time.UTC)
+	testutil.CreateFileWithModTime(t, filepath.Join(tmpDir, "a.txt"), "same-content", modTime)
+	testutil.CreateFileWithModTime(t, filepath.Join(tmpDir, "b.txt"), "same-content", modTime)
+
+	s := New(Options{NoSnapshot: true})
+
+	// Run duplicate to trash one file.
+	_, err := s.RunDuplicate(DuplicateRequest{
+		TargetDir: tmpDir,
+		DryRun:    false,
+		Workers:   2,
+	})
+	require.NoError(t, err)
+
+	// Purge with no filter — should match nothing.
+	purgeExec, err := s.RunPurge(PurgeRequest{
+		TargetDir: tmpDir,
+		DryRun:    false,
+	})
+	require.NoError(t, err)
+
+	assert.Equal(t, 0, purgeExec.PurgedCount)
+	assert.Len(t, purgeExec.Runs, 1, "should still list existing runs")
+	assert.Empty(t, purgeExec.Operations, "no operations with no filter")
 }
 
 func TestService_RunUndo_MarksJournalRolledBack(t *testing.T) {
