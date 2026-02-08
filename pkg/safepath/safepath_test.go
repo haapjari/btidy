@@ -399,6 +399,46 @@ func TestSafeRemove(t *testing.T) {
 	})
 }
 
+func TestSafeMkdirAll(t *testing.T) {
+	t.Parallel()
+
+	t.Run("create directory within root", func(t *testing.T) {
+		t.Parallel()
+		tmpDir := t.TempDir()
+
+		v, err := safepath.New(tmpDir)
+		require.NoError(t, err)
+
+		dir := filepath.Join(tmpDir, "new_dir", "sub_dir")
+		require.NoError(t, v.SafeMkdirAll(dir))
+		assert.DirExists(t, dir)
+	})
+
+	t.Run("create directory outside root blocked", func(t *testing.T) {
+		t.Parallel()
+		tmpDir := t.TempDir()
+
+		v, err := safepath.New(tmpDir)
+		require.NoError(t, err)
+
+		outsideDir := filepath.Join(tmpDir, "..", "should_not_create")
+		assert.Error(t, v.SafeMkdirAll(outsideDir))
+	})
+
+	t.Run("existing directory is no-op", func(t *testing.T) {
+		t.Parallel()
+		tmpDir := t.TempDir()
+		existingDir := filepath.Join(tmpDir, "existing")
+		require.NoError(t, os.Mkdir(existingDir, 0o755))
+
+		v, err := safepath.New(tmpDir)
+		require.NoError(t, err)
+
+		require.NoError(t, v.SafeMkdirAll(existingDir))
+		assert.DirExists(t, existingDir)
+	})
+}
+
 func TestSafeRemoveDir(t *testing.T) {
 	t.Parallel()
 

@@ -68,11 +68,9 @@ func TestMain(m *testing.M) {
 		binPath += ".exe"
 	}
 
-	cmd := exec.Command("go", "build", "-o", binPath, "./cmd")
-	cmd.Dir = repoRoot
-	output, err := cmd.CombinedOutput()
-	if err != nil {
-		_, _ = fmt.Fprintf(os.Stderr, "failed to build btidy: %v\n%s\n", err, string(output))
+	buildOutput, buildErr := buildBinary(binPath, repoRoot)
+	if buildErr != nil {
+		_, _ = fmt.Fprintf(os.Stderr, "failed to build btidy: %v\n%s\n", buildErr, string(buildOutput))
 		_ = os.RemoveAll(binDir)
 		os.Exit(1)
 	}
@@ -82,6 +80,16 @@ func TestMain(m *testing.M) {
 	exitCode := m.Run()
 	_ = os.RemoveAll(binDir)
 	os.Exit(exitCode)
+}
+
+func buildBinary(binPath, repoRoot string) ([]byte, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
+
+	cmd := exec.CommandContext(ctx, "go", "build", "-o", binPath, "./cmd")
+	cmd.Dir = repoRoot
+
+	return cmd.CombinedOutput()
 }
 
 func binaryPath(t *testing.T) string {
@@ -792,4 +800,105 @@ func TestEndToEndManifest_OutputOutsideTargetRejected(t *testing.T) {
 	assertCommandFailed(t, result, "output path", "target directory")
 
 	assertMissing(t, outsideOutputPath)
+}
+
+func TestEndToEndOrganize_DryRunAndApply(t *testing.T) {
+	binPath := binaryPath(t)
+	root := t.TempDir()
+	modTime := time.Date(2023, 5, 10, 14, 0, 0, 0, time.UTC)
+
+	writeFile(t, filepath.Join(root, "report.pdf"), "pdf-content", modTime)
+	writeFile(t, filepath.Join(root, "photo.jpg"), "jpg-content", modTime)
+	writeFile(t, filepath.Join(root, "notes.txt"), "txt-content", modTime)
+	writeFile(t, filepath.Join(root, "Makefile"), "make-content", modTime)
+
+	// Dry-run should not move files.
+	dryRun := runBinary(t, binPath, "organize", "--dry-run", root)
+	assertCommandSucceeded(t, "organize dry-run", dryRun)
+	if !strings.Contains(dryRun.stdout, "=== DRY RUN - no changes will be made ===") {
+		t.Fatalf("expected dry-run banner in output\n%s", dryRun.stdout)
+	}
+
+	assertExists(t, filepath.Join(root, "report.pdf"))
+	assertExists(t, filepath.Join(root, "photo.jpg"))
+	assertExists(t, filepath.Join(root, "notes.txt"))
+	assertExists(t, filepath.Join(root, "Makefile"))
+
+	// Apply should move files into extension directories.
+	apply := runBinary(t, binPath, "organize", root)
+	assertCommandSucceeded(t, "organize apply", apply)
+
+	assertMissing(t, filepath.Join(root, "report.pdf"))
+	assertMissing(t, filepath.Join(root, "photo.jpg"))
+	assertMissing(t, filepath.Join(root, "notes.txt"))
+	assertMissing(t, filepath.Join(root, "Makefile"))
+
+	assertExists(t, filepath.Join(root, "pdf", "report.pdf"))
+	assertExists(t, filepath.Join(root, "jpg", "photo.jpg"))
+	assertExists(t, filepath.Join(root, "txt", "notes.txt"))
+	assertExists(t, filepath.Join(root, "other", "Makefile"))
+}
+
+func TestEndToEndOrganize_AfterFlatten(t *testing.T) {
+	binPath := binaryPath(t)
+	root := t.TempDir()
+	modTime := time.Date(2023, 5, 10, 14, 0, 0, 0, time.UTC)
+
+	// Create a nested structure with mixed file types.
+	writeFile(t, filepath.Join(root, "docs", "report.pdf"), "pdf", modTime)
+	writeFile(t, filepath.Join(root, "photos", "vacation", "photo.jpg"), "jpg", modTime)
+	writeFile(t, filepath.Join(root, "notes.txt"), "txt", modTime)
+
+	// Flatten first.
+	flatten := runBinary(t, binPath, "--workers", "1", "flatten", root)
+	assertCommandSucceeded(t, "flatten", flatten)
+
+	// All files should be in root now.
+	assertExists(t, filepath.Join(root, "report.pdf"))
+	assertExists(t, filepath.Join(root, "photo.jpg"))
+	assertExists(t, filepath.Join(root, "notes.txt"))
+
+	// Organize should group them by extension.
+	organize := runBinary(t, binPath, "organize", root)
+	assertCommandSucceeded(t, "organize", organize)
+
+	assertExists(t, filepath.Join(root, "pdf", "report.pdf"))
+	assertExists(t, filepath.Join(root, "jpg", "photo.jpg"))
+	assertExists(t, filepath.Join(root, "txt", "notes.txt"))
+}
+
+func TestEndToEndOrganize_SymlinkEscapeBlocked(t *testing.T) {
+	binPath := binaryPath(t)
+	root := t.TempDir()
+	outside := t.TempDir()
+	modTime := time.Date(2024, 3, 6, 12, 0, 0, 0, time.UTC)
+
+	writeFile(t, filepath.Join(root, "safe.txt"), "safe", modTime)
+
+	outsideFile := filepath.Join(outside, "outside.txt")
+	writeFile(t, outsideFile, "outside", modTime)
+	outsideBefore, err := os.ReadFile(outsideFile)
+	if err != nil {
+		t.Fatalf("failed to read outside sentinel before organize: %v", err)
+	}
+
+	linkPath := filepath.Join(root, "escape_link.txt")
+	if symlinkErr := os.Symlink(outsideFile, linkPath); symlinkErr != nil {
+		t.Skipf("symlink not supported: %v", symlinkErr)
+	}
+
+	result := runBinary(t, binPath, "organize", root)
+	assertCommandFailed(t, result, "unsafe path", "organize", "symlink")
+
+	// Safe file should not have been moved.
+	assertExists(t, filepath.Join(root, "safe.txt"))
+	assertExists(t, linkPath)
+
+	outsideAfter, err := os.ReadFile(outsideFile)
+	if err != nil {
+		t.Fatalf("failed to read outside sentinel after organize: %v", err)
+	}
+	if !bytes.Equal(outsideBefore, outsideAfter) {
+		t.Fatalf("outside sentinel changed unexpectedly")
+	}
 }

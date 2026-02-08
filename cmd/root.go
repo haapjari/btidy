@@ -6,6 +6,9 @@ import (
 	"github.com/spf13/cobra"
 )
 
+// version is set at build time via -ldflags.
+var version = "dev"
+
 var (
 	dryRun  bool
 	verbose bool
@@ -14,14 +17,16 @@ var (
 
 func buildRootCommand() *cobra.Command {
 	cmd := &cobra.Command{
-		Use:   "btidy",
-		Short: "Organize backup files by unzipping, renaming, and flattening directory structures",
+		Use:     "btidy",
+		Version: version,
+		Short:   "Organize backup files by unzipping, renaming, and flattening directory structures",
 		Long: `btidy helps clean up backup directories.
 
 Commands:
 	  unzip      Extracts zip archives recursively and removes extracted archives
   rename     Renames files in place with consistent naming
   flatten    Moves all files to root directory, removes duplicates by content hash
+  organize   Groups files into subdirectories by file extension
   duplicate  Finds and removes duplicate files by content hash
   manifest   Creates a cryptographic inventory of all files
 

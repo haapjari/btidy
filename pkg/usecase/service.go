@@ -11,6 +11,7 @@ import (
 	"btidy/pkg/deduplicator"
 	"btidy/pkg/flattener"
 	"btidy/pkg/manifest"
+	"btidy/pkg/organizer"
 	"btidy/pkg/renamer"
 	"btidy/pkg/safepath"
 	"btidy/pkg/unzipper"
@@ -116,6 +117,38 @@ type ManifestExecution struct {
 	Workers    int
 }
 
+// OrganizeRequest contains inputs for the organize workflow.
+type OrganizeRequest struct {
+	TargetDir  string
+	DryRun     bool
+	OnProgress ProgressCallback
+}
+
+// OrganizeExecution contains organize workflow outputs.
+type OrganizeExecution struct {
+	RootDir         string
+	FileCount       int
+	CollectDuration time.Duration
+	Result          organizer.Result
+}
+
+// RunOrganize executes the organize workflow.
+func (s *Service) RunOrganize(req OrganizeRequest) (OrganizeExecution, error) {
+	return runCheckedExecution(
+		s,
+		req.TargetDir,
+		organizeExecutor(req.DryRun, req.OnProgress),
+		organizeExecutionFromWorkflow,
+		"organize",
+		func(execution OrganizeExecution) []organizer.MoveOperation {
+			return execution.Result.Operations
+		},
+		func(op organizer.MoveOperation) (string, error) {
+			return op.OriginalPath, op.Error
+		},
+	)
+}
+
 // RunRename executes the rename workflow.
 func (s *Service) RunRename(req RenameRequest) (RenameExecution, error) {
 	return runCheckedExecution(
@@ -185,39 +218,23 @@ func (s *Service) RunUnzip(req UnzipRequest) (UnzipExecution, error) {
 }
 
 func renameExecutionFromWorkflow(workflowResult fileWorkflowResult[renamer.Result]) RenameExecution {
-	return RenameExecution{
-		RootDir:         workflowResult.RootDir,
-		FileCount:       workflowResult.FileCount,
-		CollectDuration: workflowResult.CollectDuration,
-		Result:          workflowResult.Result,
-	}
+	return RenameExecution(workflowResult)
 }
 
 func flattenExecutionFromWorkflow(workflowResult fileWorkflowResult[flattener.Result]) FlattenExecution {
-	return FlattenExecution{
-		RootDir:         workflowResult.RootDir,
-		FileCount:       workflowResult.FileCount,
-		CollectDuration: workflowResult.CollectDuration,
-		Result:          workflowResult.Result,
-	}
+	return FlattenExecution(workflowResult)
 }
 
 func duplicateExecutionFromWorkflow(workflowResult fileWorkflowResult[deduplicator.Result]) DuplicateExecution {
-	return DuplicateExecution{
-		RootDir:         workflowResult.RootDir,
-		FileCount:       workflowResult.FileCount,
-		CollectDuration: workflowResult.CollectDuration,
-		Result:          workflowResult.Result,
-	}
+	return DuplicateExecution(workflowResult)
 }
 
 func unzipExecutionFromWorkflow(workflowResult fileWorkflowResult[unzipper.Result]) UnzipExecution {
-	return UnzipExecution{
-		RootDir:         workflowResult.RootDir,
-		FileCount:       workflowResult.FileCount,
-		CollectDuration: workflowResult.CollectDuration,
-		Result:          workflowResult.Result,
-	}
+	return UnzipExecution(workflowResult)
+}
+
+func organizeExecutionFromWorkflow(workflowResult fileWorkflowResult[organizer.Result]) OrganizeExecution {
+	return OrganizeExecution(workflowResult)
 }
 
 // RunManifest executes the manifest workflow.
@@ -343,6 +360,7 @@ func runCheckedExecution[T any, E any, O any](
 	return execution, nil
 }
 
+//nolint:dupl // structurally similar to organizeExecutor but different types prevent generic unification.
 func renameExecutor(dryRun bool, onProgress ProgressCallback) func(rootDir string, validator *safepath.Validator, files []collector.FileInfo) (renamer.Result, error) {
 	return func(_ string, validator *safepath.Validator, files []collector.FileInfo) (renamer.Result, error) {
 		r, err := renamer.NewWithValidator(validator, dryRun)
@@ -387,6 +405,20 @@ func unzipExecutor(dryRun bool, onProgress ProgressCallback) func(rootDir string
 
 		return u.ExtractArchivesWithProgress(files, func(stage string, processed, total int) {
 			emitProgress(onProgress, stage, processed, total)
+		}), nil
+	}
+}
+
+//nolint:dupl // structurally similar to renameExecutor but different types prevent generic unification.
+func organizeExecutor(dryRun bool, onProgress ProgressCallback) func(rootDir string, validator *safepath.Validator, files []collector.FileInfo) (organizer.Result, error) {
+	return func(_ string, validator *safepath.Validator, files []collector.FileInfo) (organizer.Result, error) {
+		o, err := organizer.NewWithValidator(validator, dryRun)
+		if err != nil {
+			return organizer.Result{}, fmt.Errorf("failed to create organizer: %w", err)
+		}
+
+		return o.OrganizeFilesWithProgress(files, func(processed, total int) {
+			emitProgress(onProgress, "organizing", processed, total)
 		}), nil
 	}
 }

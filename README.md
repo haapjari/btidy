@@ -1,13 +1,13 @@
 # btidy
 
-CLI to organize backup folders: unzip archives, rename files, flatten
-directories, remove duplicates, and verify with manifests.
+Tool to tame messy backup directories, recursively extract archives, deduplicate files by content hash, and organize what's left.
 
 ## Overview
 
-- Unzip extracts .zip files in place (recursive) and removes archives on success.
+- Unzip extracts .zip files recursively in the directory, in place and removes archives on success.
 - Rename applies a timestamped, sanitized filename in the same directory.
 - Flatten moves files to root and removes content duplicates safely.
+- Organize groups files into subdirectories by file extension.
 - Duplicate removes duplicate content by hash across the tree.
 - Manifest writes a cryptographic inventory for before/after verification.
 
@@ -17,43 +17,60 @@ directories, remove duplicates, and verify with manifests.
 # Build
 make build
 
-# Typical workflow
+# typical workflow
 ./btidy unzip /path/to/backup/2018
 ./btidy rename /path/to/backup/2018
 ./btidy flatten /path/to/backup/2018
+./btidy organize /path/to/backup/2018
 ./btidy duplicate /path/to/backup/2018
+./btidy organize /path/to/backup
 
-# Unzip (preview, then apply)
+# unzip (preview, then apply)
 ./btidy unzip --dry-run /path/to/backup
 ./btidy unzip /path/to/backup
 
-# Rename (preview, then apply)
+# rename (preview, then apply)
 ./btidy rename --dry-run /path/to/backup
 ./btidy rename /path/to/backup
 
-# Flatten (preview, then apply)
+# flatten (preview, then apply)
 ./btidy flatten --dry-run /path/to/backup
 ./btidy flatten /path/to/backup
 
-# Duplicate (preview, then apply)
+# organize by extension (preview, then apply)
+./btidy organize --dry-run /path/to/backup
+./btidy organize /path/to/backup
+
+# duplicate (preview, then apply)
 ./btidy duplicate --dry-run /path/to/backup
 ./btidy duplicate /path/to/backup
 
-# Manifest (before/after verification)
+# manifest (before and after verification)
 ./btidy manifest /path/to/backup -o before.json
 ./btidy unzip /path/to/backup
 ./btidy rename /path/to/backup
 ./btidy flatten /path/to/backup
+./btidy organize /path/to/backup
 ./btidy duplicate /path/to/backup
 ./btidy manifest /path/to/backup -o after.json
 
-# Manifest output inside target directory
+# manifest output inside target directory
 ./btidy manifest /path/to/backup -o manifests/manifest.json
 # writes to /path/to/backup/manifests/manifest.json
 
-# Rename example
+# rename example
 # Before: My Document (Final).pdf
 # After:  2018-06-15_my_document_final.pdf
+
+# organize example
+#
+# Before:            After:
+#   report.pdf         pdf/report.pdf
+#   photo.jpg          jpg/photo.jpg
+#   notes.txt          txt/notes.txt
+#   Makefile           other/Makefile
+#   .gitignore         other/.gitignore
+#   data.tar.gz        gz/data.tar.gz
 ```
 
 ## Safety

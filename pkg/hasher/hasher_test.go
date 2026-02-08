@@ -225,7 +225,7 @@ func TestHasher_HashFiles(t *testing.T) {
 			{"file3.txt", "content 3"},
 		}
 
-		var paths []string
+		paths := make([]string, 0, len(files))
 		expectedHashes := make(map[string]string)
 		for _, f := range files {
 			path := createTestFile(t, tmpDir, f.name, f.content)
@@ -387,7 +387,7 @@ func TestHasher_HashFiles_Parallel_Correctness(t *testing.T) {
 		gotHashes[result.Path] = result.Hash
 	}
 
-	assert.Equal(t, len(expectedHashes), len(gotHashes))
+	assert.Len(t, gotHashes, len(expectedHashes))
 	for path, expected := range expectedHashes {
 		assert.Equal(t, expected, gotHashes[path], "hash mismatch for %s", path)
 	}

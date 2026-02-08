@@ -167,6 +167,15 @@ func (v *Validator) SafeRemove(path string) error {
 	return os.Remove(path)
 }
 
+// SafeMkdirAll creates a directory path only if it's within root.
+func (v *Validator) SafeMkdirAll(path string) error {
+	if err := v.validatePathForMutation(path); err != nil {
+		return fmt.Errorf("%w: %s", err, path)
+	}
+
+	return os.MkdirAll(path, 0o755)
+}
+
 // SafeRemoveDir removes an empty directory only if it's within root
 // and is not the root directory itself.
 func (v *Validator) SafeRemoveDir(path string) error {
