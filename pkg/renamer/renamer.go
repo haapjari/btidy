@@ -48,6 +48,11 @@ type Renamer struct {
 	trasher   *trash.Trasher
 }
 
+// ErrContentChanged indicates that a file's content has changed since its hash
+// was computed. This sentinel allows callers to detect and handle stale-hash
+// situations with errors.Is.
+var ErrContentChanged = errors.New("file content changed since hash was computed")
+
 var tbdPrefixPattern = regexp.MustCompile(`^\d{4}-TBD-TBD_`)
 
 type nameUsage struct {
@@ -310,7 +315,7 @@ func (r *Renamer) markAsDuplicate(op *RenameOperation, f collector.FileInfo, exp
 		return
 	}
 	if currentHash != expectedHash {
-		op.Error = errors.New("file content changed since hash was computed, refusing to delete")
+		op.Error = fmt.Errorf("%w, refusing to delete", ErrContentChanged)
 		op.Deleted = false
 		return
 	}

@@ -15,6 +15,11 @@ import (
 	"btidy/pkg/trash"
 )
 
+// ErrContentChanged indicates that a file's content has changed since its hash
+// was computed. This sentinel allows callers to detect and handle stale-hash
+// situations with errors.Is.
+var ErrContentChanged = errors.New("file content changed since hash was computed")
+
 // MoveOperation represents a single move operation.
 type MoveOperation struct {
 	OriginalPath string
@@ -262,6 +267,17 @@ func (f *Flattener) handleDuplicate(op *MoveOperation, dupPath, existingPath str
 		// Verify the kept file still exists before deleting the duplicate.
 		if _, err := os.Lstat(existingPath); err != nil {
 			op.Error = fmt.Errorf("kept file missing, refusing to delete duplicate: %w", err)
+			return *op
+		}
+
+		// Re-hash the file to confirm it hasn't changed since initial hash.
+		currentHash, err := f.hasher.ComputeHash(dupPath)
+		if err != nil {
+			op.Error = fmt.Errorf("re-hash before delete: %w", err)
+			return *op
+		}
+		if currentHash != op.Hash {
+			op.Error = fmt.Errorf("content changed since hashing: %w", ErrContentChanged)
 			return *op
 		}
 

@@ -567,8 +567,7 @@ func TestRenamer_RenameFiles_RefusesDeleteWhenContentChanged(t *testing.T) {
 	r.markAsDuplicate(&op, secondFile, "bogus_hash_that_wont_match", files[0].Path)
 
 	require.Error(t, op.Error, "should error when re-hash doesn't match expected hash")
-	assert.Contains(t, op.Error.Error(), "file content changed",
-		"error should mention content changed")
+	require.ErrorIs(t, op.Error, ErrContentChanged)
 	assert.False(t, op.Deleted, "file should NOT be marked as deleted")
 
 	// File must still exist on disk.

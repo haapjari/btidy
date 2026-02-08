@@ -821,3 +821,48 @@ func TestDeduplicator_FindDuplicates_TrashesFilesWhenTrasherProvided(t *testing.
 	// The trashed file should exist at the trash destination.
 	assert.FileExists(t, result.Operations[0].TrashedTo)
 }
+
+// Test that deleting a duplicate is refused when the file content changed after hashing.
+func TestDeduplicator_DeleteFile_RefusesWhenContentChanged(t *testing.T) {
+	tmpDir := setupTestDir(t)
+	defer os.RemoveAll(tmpDir)
+
+	modTime := time.Date(2018, 6, 15, 12, 0, 0, 0, time.UTC)
+	content := "same content"
+
+	// Create the "original" (kept) file and the "duplicate".
+	originalPath := filepath.Join(tmpDir, "original.txt")
+	dupPath := filepath.Join(tmpDir, "duplicate.txt")
+	createTestFile(t, originalPath, content, modTime)
+	createTestFile(t, dupPath, content, modTime)
+
+	// Compute the hash of the duplicate while it still matches.
+	h := hasher.New()
+	originalHash, err := h.ComputeHash(dupPath)
+	require.NoError(t, err)
+
+	// Now modify the duplicate on disk to simulate content changing after hashing.
+	require.NoError(t, os.WriteFile(dupPath, []byte("modified content"), 0o600))
+
+	v, err := safepath.New(tmpDir)
+	require.NoError(t, err)
+
+	d, err := NewWithValidator(v, false, 1, nil)
+	require.NoError(t, err)
+
+	dupFile := collector.FileInfo{
+		Path:    dupPath,
+		Dir:     tmpDir,
+		Name:    "duplicate.txt",
+		Size:    int64(len(content)),
+		ModTime: modTime,
+	}
+
+	op := d.deleteFile(dupFile, originalPath, originalHash)
+
+	require.Error(t, op.Error, "should error when re-hash doesn't match")
+	require.ErrorIs(t, op.Error, ErrContentChanged)
+
+	// Duplicate must still exist on disk.
+	assert.FileExists(t, dupPath, "duplicate must be preserved when content changed")
+}

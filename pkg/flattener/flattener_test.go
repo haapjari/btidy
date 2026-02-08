@@ -433,3 +433,44 @@ func TestFlattener_FlattenFiles_UnsafeSymlinkFailsBeforeMutations(t *testing.T) 
 	assert.FileExists(t, safeFile)
 	assert.NoFileExists(t, filepath.Join(tmpDir, "safe.txt"))
 }
+
+// Test that a duplicate is preserved when its content changed after hashing.
+func TestFlattener_FlattenFiles_DuplicatePreservedWhenContentChanged(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	modTime := time.Date(2018, 6, 15, 12, 0, 0, 0, time.UTC)
+	// Create two identical files in subdirectories.
+	keptFile := filepath.Join(tmpDir, "dir1", "file.txt")
+	dupeFile := filepath.Join(tmpDir, "dir2", "file.txt")
+	createTestFile(t, keptFile, "content", modTime)
+	createTestFile(t, dupeFile, "content", modTime)
+
+	files := collectFiles(t, tmpDir)
+	require.Len(t, files, 2)
+
+	f, err := New(tmpDir, false)
+	require.NoError(t, err)
+
+	// Pre-compute hashes (same as FlattenFiles does internally).
+	fileHashes, _ := f.computeHashes(files, nil)
+	seenHash := make(map[string]string)
+	nameCount := make(map[string]int)
+
+	// Process the first file (will be moved to root).
+	op1 := f.processFile(&files[0], fileHashes[files[0].Path], seenHash, nameCount)
+	require.NoError(t, op1.Error)
+	require.False(t, op1.Duplicate)
+
+	// Now modify the second file on disk to simulate content changing after hashing.
+	require.NoError(t, os.WriteFile(dupeFile, []byte("modified content"), 0o600))
+
+	// Process the second file — it has the same hash in the map so it's a duplicate,
+	// but the re-hash should detect the change and refuse to delete.
+	op2 := f.processFile(&files[1], fileHashes[files[1].Path], seenHash, nameCount)
+	require.Error(t, op2.Error, "should refuse to delete duplicate when content changed")
+	assert.True(t, op2.Duplicate)
+	require.ErrorIs(t, op2.Error, ErrContentChanged)
+
+	// The duplicate should still exist on disk.
+	assert.FileExists(t, dupeFile)
+}
