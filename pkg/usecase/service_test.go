@@ -12,6 +12,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"btidy/internal/testutil"
+	"btidy/pkg/manifest"
 )
 
 type zipFixtureEntry struct {
@@ -335,4 +336,98 @@ func TestService_RunUnzip_RecursiveNestedArchives(t *testing.T) {
 
 	_, err = os.Stat(filepath.Join(tmpDir, "nested", "inner", "final.txt"))
 	require.NoError(t, err)
+}
+
+func TestService_RunDuplicate_GeneratesSnapshot(t *testing.T) {
+	t.Parallel()
+
+	tmpDir := t.TempDir()
+	modTime := time.Date(2018, 6, 15, 12, 0, 0, 0, time.UTC)
+	testutil.CreateFileWithModTime(t, filepath.Join(tmpDir, "a.txt"), "same-content", modTime)
+	testutil.CreateFileWithModTime(t, filepath.Join(tmpDir, "b.txt"), "same-content", modTime)
+
+	s := New(Options{})
+	execution, err := s.RunDuplicate(DuplicateRequest{
+		TargetDir: tmpDir,
+		DryRun:    false,
+		Workers:   2,
+	})
+	require.NoError(t, err)
+
+	assert.NotEmpty(t, execution.SnapshotPath, "snapshot path should be set for non-dry-run")
+	_, err = os.Stat(execution.SnapshotPath)
+	require.NoError(t, err, "snapshot file should exist")
+
+	// Verify the snapshot is a valid manifest with 2 entries (the original files).
+	m, err := manifest.Load(execution.SnapshotPath)
+	require.NoError(t, err)
+	assert.Equal(t, 2, m.FileCount())
+}
+
+func TestService_RunDuplicate_DryRunSkipsSnapshot(t *testing.T) {
+	t.Parallel()
+
+	tmpDir := t.TempDir()
+	modTime := time.Date(2018, 6, 15, 12, 0, 0, 0, time.UTC)
+	testutil.CreateFileWithModTime(t, filepath.Join(tmpDir, "a.txt"), "same-content", modTime)
+	testutil.CreateFileWithModTime(t, filepath.Join(tmpDir, "b.txt"), "same-content", modTime)
+
+	s := New(Options{})
+	execution, err := s.RunDuplicate(DuplicateRequest{
+		TargetDir: tmpDir,
+		DryRun:    true,
+		Workers:   2,
+	})
+	require.NoError(t, err)
+
+	assert.Empty(t, execution.SnapshotPath, "snapshot path should be empty for dry-run")
+
+	// Verify .btidy/manifests/ does not exist.
+	_, err = os.Stat(filepath.Join(tmpDir, ".btidy", "manifests"))
+	assert.True(t, os.IsNotExist(err), "no manifests directory should be created in dry-run")
+}
+
+func TestService_RunFlatten_NoSnapshotOption(t *testing.T) {
+	t.Parallel()
+
+	tmpDir := t.TempDir()
+	modTime := time.Date(2018, 6, 15, 12, 0, 0, 0, time.UTC)
+	testutil.CreateFileWithModTime(t, filepath.Join(tmpDir, "nested", "file.txt"), "content", modTime)
+
+	s := New(Options{NoSnapshot: true})
+	execution, err := s.RunFlatten(FlattenRequest{
+		TargetDir: tmpDir,
+		DryRun:    false,
+		Workers:   2,
+	})
+	require.NoError(t, err)
+
+	assert.Empty(t, execution.SnapshotPath, "snapshot path should be empty when NoSnapshot is true")
+
+	// Verify .btidy/manifests/ does not exist.
+	_, err = os.Stat(filepath.Join(tmpDir, ".btidy", "manifests"))
+	assert.True(t, os.IsNotExist(err), "no manifests directory should be created when NoSnapshot is true")
+}
+
+func TestService_RunRename_GeneratesSnapshot(t *testing.T) {
+	t.Parallel()
+
+	tmpDir := t.TempDir()
+	modTime := time.Date(2018, 6, 15, 12, 0, 0, 0, time.UTC)
+	testutil.CreateFileWithModTime(t, filepath.Join(tmpDir, "My Document.pdf"), "content", modTime)
+
+	s := New(Options{})
+	execution, err := s.RunRename(RenameRequest{
+		TargetDir: tmpDir,
+		DryRun:    false,
+	})
+	require.NoError(t, err)
+
+	assert.NotEmpty(t, execution.SnapshotPath, "snapshot path should be set")
+	_, err = os.Stat(execution.SnapshotPath)
+	require.NoError(t, err, "snapshot file should exist")
+
+	m, err := manifest.Load(execution.SnapshotPath)
+	require.NoError(t, err)
+	assert.Equal(t, 1, m.FileCount())
 }

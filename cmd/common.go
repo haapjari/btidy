@@ -23,8 +23,9 @@ func skipDirs() []string {
 
 func newUseCaseService() *usecase.Service {
 	return usecase.New(usecase.Options{
-		SkipFiles: skipFiles(),
-		SkipDirs:  skipDirs(),
+		SkipFiles:  skipFiles(),
+		SkipDirs:   skipDirs(),
+		NoSnapshot: noSnapshot,
 	})
 }
 
@@ -57,6 +58,7 @@ type fileCommandExecutionInfo struct {
 	rootDir         string
 	fileCount       int
 	collectDuration time.Duration
+	snapshotPath    string
 }
 
 func runFileCommand[T any](
@@ -78,6 +80,9 @@ func runFileCommand[T any](
 
 	info := executionInfo(execution)
 	printCommandHeader(command, info.rootDir)
+	if info.snapshotPath != "" {
+		fmt.Printf("Snapshot: %s\n", info.snapshotPath)
+	}
 	if printExtraHeader != nil {
 		printExtraHeader()
 	}

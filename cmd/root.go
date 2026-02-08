@@ -10,9 +10,10 @@ import (
 var version = "dev"
 
 var (
-	dryRun  bool
-	verbose bool
-	workers int
+	dryRun     bool
+	verbose    bool
+	workers    int
+	noSnapshot bool
 )
 
 func buildRootCommand() *cobra.Command {
@@ -70,6 +71,7 @@ Safety:
 	cmd.PersistentFlags().BoolVar(&dryRun, "dry-run", false, "Show what would be done without making changes")
 	cmd.PersistentFlags().BoolVarP(&verbose, "verbose", "v", false, "Verbose output")
 	cmd.PersistentFlags().IntVar(&workers, "workers", runtime.NumCPU(), "Number of parallel workers for hashing")
+	cmd.PersistentFlags().BoolVar(&noSnapshot, "no-snapshot", false, "Skip pre-operation manifest snapshot")
 
 	return cmd
 }

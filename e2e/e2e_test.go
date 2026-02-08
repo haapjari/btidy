@@ -659,7 +659,7 @@ func TestEndToEndRename_SymlinkEscapeBlocked(t *testing.T) {
 	}
 
 	result := runBinary(t, binPath, "rename", "--dry-run", root)
-	assertCommandFailed(t, result, "unsafe path", "rename", "symlink")
+	assertCommandFailed(t, result, "unsafe", "symlink")
 
 	info, err := os.Lstat(linkPath)
 	if err != nil {
@@ -699,7 +699,7 @@ func TestEndToEndFlatten_SymlinkEscapeBlocked(t *testing.T) {
 	}
 
 	result := runBinary(t, binPath, "flatten", root)
-	assertCommandFailed(t, result, "unsafe path", "flatten", "symlink")
+	assertCommandFailed(t, result, "unsafe", "symlink")
 
 	assertExists(t, filepath.Join(root, "nested", "safe.txt"))
 	assertMissing(t, filepath.Join(root, "safe.txt"))
@@ -736,7 +736,7 @@ func TestEndToEndDuplicate_SymlinkEscapeBlocked(t *testing.T) {
 	}
 
 	result := runBinary(t, binPath, "duplicate", root)
-	assertCommandFailed(t, result, "unsafe path", "duplicate", "symlink")
+	assertCommandFailed(t, result, "unsafe", "symlink")
 
 	assertExists(t, filepath.Join(root, "a.txt"))
 	assertExists(t, filepath.Join(root, "b.txt"))
@@ -888,7 +888,7 @@ func TestEndToEndOrganize_SymlinkEscapeBlocked(t *testing.T) {
 	}
 
 	result := runBinary(t, binPath, "organize", root)
-	assertCommandFailed(t, result, "unsafe path", "organize", "symlink")
+	assertCommandFailed(t, result, "unsafe", "symlink")
 
 	// Safe file should not have been moved.
 	assertExists(t, filepath.Join(root, "safe.txt"))

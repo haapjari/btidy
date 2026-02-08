@@ -5,6 +5,8 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
+	"runtime"
 	"time"
 
 	"btidy/pkg/collector"
@@ -22,8 +24,9 @@ import (
 
 // Options configures a Service.
 type Options struct {
-	SkipFiles []string
-	SkipDirs  []string
+	SkipFiles  []string
+	SkipDirs   []string
+	NoSnapshot bool
 }
 
 // ProgressCallback receives workflow stage progress updates.
@@ -32,15 +35,17 @@ type ProgressCallback func(stage string, processed, total int)
 
 // Service orchestrates command workflows without Cobra dependencies.
 type Service struct {
-	skipFiles []string
-	skipDirs  []string
+	skipFiles  []string
+	skipDirs   []string
+	noSnapshot bool
 }
 
 // New creates a use-case service.
 func New(opts Options) *Service {
 	return &Service{
-		skipFiles: append([]string(nil), opts.SkipFiles...),
-		skipDirs:  append([]string(nil), opts.SkipDirs...),
+		skipFiles:  append([]string(nil), opts.SkipFiles...),
+		skipDirs:   append([]string(nil), opts.SkipDirs...),
+		noSnapshot: opts.NoSnapshot,
 	}
 }
 
@@ -57,6 +62,7 @@ type RenameExecution struct {
 	FileCount       int
 	CollectDuration time.Duration
 	Result          renamer.Result
+	SnapshotPath    string
 }
 
 // FlattenRequest contains inputs for the flatten workflow.
@@ -73,6 +79,7 @@ type FlattenExecution struct {
 	FileCount       int
 	CollectDuration time.Duration
 	Result          flattener.Result
+	SnapshotPath    string
 }
 
 // DuplicateRequest contains inputs for the duplicate workflow.
@@ -89,6 +96,7 @@ type DuplicateExecution struct {
 	FileCount       int
 	CollectDuration time.Duration
 	Result          deduplicator.Result
+	SnapshotPath    string
 }
 
 // UnzipRequest contains inputs for the unzip workflow.
@@ -104,6 +112,7 @@ type UnzipExecution struct {
 	FileCount       int
 	CollectDuration time.Duration
 	Result          unzipper.Result
+	SnapshotPath    string
 }
 
 // ManifestRequest contains inputs for the manifest workflow.
@@ -136,6 +145,7 @@ type OrganizeExecution struct {
 	FileCount       int
 	CollectDuration time.Duration
 	Result          organizer.Result
+	SnapshotPath    string
 }
 
 // RunOrganize executes the organize workflow.
@@ -143,6 +153,7 @@ func (s *Service) RunOrganize(req OrganizeRequest) (OrganizeExecution, error) {
 	return runCheckedExecution(
 		s,
 		req.TargetDir,
+		req.DryRun,
 		organizeExecutor(req.DryRun, req.OnProgress),
 		organizeExecutionFromWorkflow,
 		"organize",
@@ -160,6 +171,7 @@ func (s *Service) RunRename(req RenameRequest) (RenameExecution, error) {
 	return runCheckedExecution(
 		s,
 		req.TargetDir,
+		req.DryRun,
 		renameExecutor(req.DryRun, req.OnProgress),
 		renameExecutionFromWorkflow,
 		"rename",
@@ -177,6 +189,7 @@ func (s *Service) RunFlatten(req FlattenRequest) (FlattenExecution, error) {
 	return runCheckedExecution(
 		s,
 		req.TargetDir,
+		req.DryRun,
 		flattenExecutor(req.DryRun, req.Workers, req.OnProgress),
 		flattenExecutionFromWorkflow,
 		"flatten",
@@ -194,6 +207,7 @@ func (s *Service) RunDuplicate(req DuplicateRequest) (DuplicateExecution, error)
 	return runCheckedExecution(
 		s,
 		req.TargetDir,
+		req.DryRun,
 		duplicateExecutor(req.DryRun, req.Workers, req.OnProgress),
 		duplicateExecutionFromWorkflow,
 		"duplicate",
@@ -211,6 +225,7 @@ func (s *Service) RunUnzip(req UnzipRequest) (UnzipExecution, error) {
 	return runCheckedExecution(
 		s,
 		req.TargetDir,
+		req.DryRun,
 		unzipExecutor(req.DryRun, req.OnProgress),
 		unzipExecutionFromWorkflow,
 		"unzip",
@@ -307,6 +322,7 @@ type fileWorkflowResult[T any] struct {
 	FileCount       int
 	CollectDuration time.Duration
 	Result          T
+	SnapshotPath    string
 }
 
 // Workflow invariant: no path is opened or mutated before validator approval.
@@ -315,7 +331,7 @@ type workflowTarget struct {
 	validator *safepath.Validator
 }
 
-func runFileWorkflow[T any](s *Service, targetDir string, execute func(rootDir string, validator *safepath.Validator, files []collector.FileInfo) (T, error)) (fileWorkflowResult[T], error) {
+func runFileWorkflow[T any](s *Service, targetDir, command string, dryRun bool, execute func(rootDir string, validator *safepath.Validator, files []collector.FileInfo) (T, error)) (fileWorkflowResult[T], error) {
 	target, err := resolveWorkflowTarget(targetDir)
 	if err != nil {
 		return fileWorkflowResult[T]{}, err
@@ -335,6 +351,15 @@ func runFileWorkflow[T any](s *Service, targetDir string, execute func(rootDir s
 		return workflowResult, nil
 	}
 
+	// Generate pre-operation snapshot unless disabled or in dry-run mode.
+	if !s.noSnapshot && !dryRun {
+		snapshotPath, snapshotErr := s.generateSnapshot(target, command)
+		if snapshotErr != nil {
+			return fileWorkflowResult[T]{}, fmt.Errorf("failed to generate pre-operation snapshot: %w", snapshotErr)
+		}
+		workflowResult.SnapshotPath = snapshotPath
+	}
+
 	operationResult, err := execute(target.rootDir, target.validator, files)
 	if err != nil {
 		return fileWorkflowResult[T]{}, err
@@ -348,13 +373,14 @@ func runFileWorkflow[T any](s *Service, targetDir string, execute func(rootDir s
 func runCheckedExecution[T any, E any, O any](
 	s *Service,
 	targetDir string,
+	dryRun bool,
 	execute func(rootDir string, validator *safepath.Validator, files []collector.FileInfo) (T, error),
 	toExecution func(fileWorkflowResult[T]) E,
 	command string,
 	operations func(E) []O,
 	operationData func(O) (path string, err error),
 ) (E, error) {
-	workflowResult, err := runFileWorkflow(s, targetDir, execute)
+	workflowResult, err := runFileWorkflow(s, targetDir, command, dryRun, execute)
 	if err != nil {
 		var zero E
 		return zero, err
@@ -515,6 +541,42 @@ func (s *Service) skipFileList() []string {
 
 func (s *Service) skipDirList() []string {
 	return append([]string(nil), s.skipDirs...)
+}
+
+// generateSnapshot creates a pre-operation manifest in .btidy/manifests/.
+func (s *Service) generateSnapshot(target workflowTarget, command string) (string, error) {
+	metaDir, err := metadata.Init(target.rootDir, target.validator)
+	if err != nil {
+		return "", fmt.Errorf("initialize metadata: %w", err)
+	}
+
+	runID := metaDir.RunID(command)
+	snapshotPath := metaDir.ManifestPath(runID)
+
+	// Ensure the manifests directory exists.
+	mkdirErr := target.validator.SafeMkdirAll(filepath.Dir(snapshotPath))
+	if mkdirErr != nil {
+		return "", fmt.Errorf("create manifests directory: %w", mkdirErr)
+	}
+
+	gen, err := manifest.NewGeneratorWithValidator(target.validator, runtime.NumCPU())
+	if err != nil {
+		return "", fmt.Errorf("create manifest generator: %w", err)
+	}
+
+	m, err := gen.Generate(manifest.GenerateOptions{
+		SkipFiles: s.skipFileList(),
+		SkipDirs:  s.skipDirList(),
+	})
+	if err != nil {
+		return "", fmt.Errorf("generate manifest: %w", err)
+	}
+
+	if saveErr := m.Save(snapshotPath); saveErr != nil {
+		return "", fmt.Errorf("save manifest: %w", saveErr)
+	}
+
+	return snapshotPath, nil
 }
 
 func resolveWorkflowTarget(targetDir string) (workflowTarget, error) {
