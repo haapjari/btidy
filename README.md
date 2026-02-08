@@ -1,13 +1,27 @@
 # btidy
 
-Simple application that I use to organize backup folders by unzipping,
-renaming, flattening, and removing duplicates.
+CLI to organize backup folders: unzip archives, rename files, flatten
+directories, remove duplicates, and verify with manifests.
+
+## Overview
+
+- Unzip extracts .zip files in place (recursive) and removes archives on success.
+- Rename applies a timestamped, sanitized filename in the same directory.
+- Flatten moves files to root and removes content duplicates safely.
+- Duplicate removes duplicate content by hash across the tree.
+- Manifest writes a cryptographic inventory for before/after verification.
 
 ## Examples
 
 ```bash
 # Build
 make build
+
+# Typical workflow
+./btidy unzip /path/to/backup/2018
+./btidy rename /path/to/backup/2018
+./btidy flatten /path/to/backup/2018
+./btidy duplicate /path/to/backup/2018
 
 # Unzip (preview, then apply)
 ./btidy unzip --dry-run /path/to/backup
@@ -25,42 +39,33 @@ make build
 ./btidy duplicate --dry-run /path/to/backup
 ./btidy duplicate /path/to/backup
 
-# Manifest
+# Manifest (before/after verification)
+./btidy manifest /path/to/backup -o before.json
+./btidy unzip /path/to/backup
+./btidy rename /path/to/backup
+./btidy flatten /path/to/backup
+./btidy duplicate /path/to/backup
+./btidy manifest /path/to/backup -o after.json
+
+# Manifest output inside target directory
 ./btidy manifest /path/to/backup -o manifests/manifest.json
 # writes to /path/to/backup/manifests/manifest.json
-```
 
-## Typical Workflow
-
-```bash
-./btidy unzip /path/to/backup/2018
-./btidy rename /path/to/backup/2018
-./btidy flatten /path/to/backup/2018
-./btidy duplicate /path/to/backup/2018
+# Rename example
+# Before: My Document (Final).pdf
+# After:  2018-06-15_my_document_final.pdf
 ```
 
 ## Safety
 
-- All file reads and mutations are contained within the target directory.
-- Symlink paths that resolve outside the target are rejected.
-- `manifest -o` output path must resolve inside the target directory.
-- Relative `manifest -o` paths are resolved from the target directory root.
+- All reads and mutations are contained within the target directory.
+- Symlinks that resolve outside the target are rejected.
+- Manifest output path must resolve inside the target directory.
 
 ## Tests
 
 ```bash
-# Unit tests
 make test
-
-# End-to-end CLI tests (builds and runs btidy)
 make test-e2e
-# or
 ./scripts/e2e.sh
-```
-
-## Naming Convention
-
-```
-Before: My Document (Final).pdf
-After:  2018-06-15_my_document_final.pdf
 ```
