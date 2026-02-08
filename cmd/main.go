@@ -10,6 +10,7 @@ func main() {
 	rootCmd.AddCommand(buildDuplicateCommand())
 	rootCmd.AddCommand(buildManifestCommand())
 	rootCmd.AddCommand(buildOrganizeCommand())
+	rootCmd.AddCommand(buildUndoCommand())
 
 	if err := rootCmd.Execute(); err != nil {
 		os.Exit(1)

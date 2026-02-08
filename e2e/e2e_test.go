@@ -924,3 +924,131 @@ func TestEndToEndBtidyDir_NeverCollected(t *testing.T) {
 		t.Fatalf("expected 'Found 1 file' in output, got:\n%s", renameResult.stdout)
 	}
 }
+
+func TestEndToEndUndo_ReversesDuplicate(t *testing.T) {
+	binPath := binaryPath(t)
+	root := t.TempDir()
+	modTime := time.Date(2024, 7, 1, 10, 0, 0, 0, time.UTC)
+
+	writeFile(t, filepath.Join(root, "a.txt"), "same-content", modTime)
+	writeFile(t, filepath.Join(root, "b.txt"), "same-content", modTime)
+	writeFile(t, filepath.Join(root, "unique.txt"), "unique", modTime)
+
+	// Run duplicate to trash one of the duplicate files.
+	dupResult := runBinary(t, binPath, "--workers", "1", "--no-snapshot", "duplicate", root)
+	assertCommandSucceeded(t, "duplicate", dupResult)
+
+	// Only 2 files should remain (one dup removed).
+	if got := fileCount(t, root); got != 2 {
+		t.Fatalf("expected 2 files after dedup, got %d", got)
+	}
+
+	// Undo the duplicate.
+	undoResult := runBinary(t, binPath, "undo", root)
+	assertCommandSucceeded(t, "undo duplicate", undoResult)
+
+	if !strings.Contains(undoResult.stdout, "Restored:  1") {
+		t.Fatalf("expected 'Restored:  1' in undo output\n%s", undoResult.stdout)
+	}
+
+	// All 3 files should be back.
+	assertExists(t, filepath.Join(root, "a.txt"))
+	assertExists(t, filepath.Join(root, "b.txt"))
+	assertExists(t, filepath.Join(root, "unique.txt"))
+}
+
+func TestEndToEndUndo_ReversesRename(t *testing.T) {
+	binPath := binaryPath(t)
+	root := t.TempDir()
+	modTime := time.Date(2024, 7, 2, 10, 0, 0, 0, time.UTC)
+
+	writeFile(t, filepath.Join(root, "My Document.pdf"), "content", modTime)
+
+	// Run rename.
+	renameResult := runBinary(t, binPath, "--no-snapshot", "rename", root)
+	assertCommandSucceeded(t, "rename", renameResult)
+
+	datePrefix := modTime.Format("2006-01-02")
+	renamedPath := filepath.Join(root, datePrefix+"_my_document.pdf")
+	assertExists(t, renamedPath)
+	assertMissing(t, filepath.Join(root, "My Document.pdf"))
+
+	// Undo the rename.
+	undoResult := runBinary(t, binPath, "undo", root)
+	assertCommandSucceeded(t, "undo rename", undoResult)
+
+	if !strings.Contains(undoResult.stdout, "Reversed:  1") {
+		t.Fatalf("expected 'Reversed:  1' in undo output\n%s", undoResult.stdout)
+	}
+
+	// Original name should be restored.
+	assertExists(t, filepath.Join(root, "My Document.pdf"))
+	assertMissing(t, renamedPath)
+}
+
+func TestEndToEndUndo_ReversesFlatten(t *testing.T) {
+	binPath := binaryPath(t)
+	root := t.TempDir()
+	modTime := time.Date(2024, 7, 3, 10, 0, 0, 0, time.UTC)
+
+	writeFile(t, filepath.Join(root, "sub", "deep", "file.txt"), "content", modTime)
+
+	// Run flatten.
+	flattenResult := runBinary(t, binPath, "--workers", "1", "--no-snapshot", "flatten", root)
+	assertCommandSucceeded(t, "flatten", flattenResult)
+
+	assertExists(t, filepath.Join(root, "file.txt"))
+	assertMissing(t, filepath.Join(root, "sub", "deep", "file.txt"))
+
+	// Undo the flatten.
+	undoResult := runBinary(t, binPath, "undo", root)
+	assertCommandSucceeded(t, "undo flatten", undoResult)
+
+	if !strings.Contains(undoResult.stdout, "Reversed:  1") {
+		t.Fatalf("expected 'Reversed:  1' in undo output\n%s", undoResult.stdout)
+	}
+
+	// File should be restored to original location.
+	assertExists(t, filepath.Join(root, "sub", "deep", "file.txt"))
+	assertMissing(t, filepath.Join(root, "file.txt"))
+}
+
+func TestEndToEndUndo_DryRunNoChanges(t *testing.T) {
+	binPath := binaryPath(t)
+	root := t.TempDir()
+	modTime := time.Date(2024, 7, 4, 10, 0, 0, 0, time.UTC)
+
+	writeFile(t, filepath.Join(root, "My Document.pdf"), "content", modTime)
+
+	// Run rename.
+	renameResult := runBinary(t, binPath, "--no-snapshot", "rename", root)
+	assertCommandSucceeded(t, "rename", renameResult)
+
+	datePrefix := modTime.Format("2006-01-02")
+	renamedPath := filepath.Join(root, datePrefix+"_my_document.pdf")
+	assertExists(t, renamedPath)
+
+	// Undo dry-run.
+	undoResult := runBinary(t, binPath, "undo", "--dry-run", root)
+	assertCommandSucceeded(t, "undo dry-run", undoResult)
+
+	if !strings.Contains(undoResult.stdout, "=== DRY RUN - no changes will be made ===") {
+		t.Fatalf("expected dry-run banner in output\n%s", undoResult.stdout)
+	}
+
+	// File should still be at the renamed location (no changes).
+	assertExists(t, renamedPath)
+	assertMissing(t, filepath.Join(root, "My Document.pdf"))
+}
+
+func TestEndToEndUndo_NoJournalError(t *testing.T) {
+	binPath := binaryPath(t)
+	root := t.TempDir()
+	modTime := time.Date(2024, 7, 5, 10, 0, 0, 0, time.UTC)
+
+	writeFile(t, filepath.Join(root, "file.txt"), "content", modTime)
+
+	// Undo with no prior operations should fail.
+	undoResult := runBinary(t, binPath, "undo", root)
+	assertCommandFailed(t, undoResult, "journal")
+}
