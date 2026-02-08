@@ -886,7 +886,8 @@ func duplicateJournalEntries(result deduplicator.Result, rootDir string) []journ
 // unzipJournalEntries converts unzip operations to journal entries.
 func unzipJournalEntries(result unzipper.Result, rootDir string) []journal.Entry {
 	var entries []journal.Entry
-	for _, op := range result.Operations {
+	for i := range result.Operations {
+		op := &result.Operations[i]
 		if op.Error != nil || op.Skipped {
 			continue
 		}

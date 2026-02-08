@@ -64,7 +64,9 @@ func runUnzip(_ *cobra.Command, args []string) error {
 		fmt.Println()
 	}
 
-	printDetailedOperations(result.Operations, printUnzipOperation)
+	printDetailedOperations(result.Operations, printUnzipOperation, func(op unzipper.ExtractOperation) bool {
+		return op.Error != nil || op.SkippedEntries > 0
+	})
 
 	printSummary(
 		fmt.Sprintf("Total files:        %d", result.TotalFiles),
@@ -91,6 +93,12 @@ func printUnzipOperation(op unzipper.ExtractOperation) {
 		fmt.Printf("UNZIP: %s\n", op.ArchivePath)
 		fmt.Printf(" FILES: %d\n", op.ExtractedFiles)
 		fmt.Printf("  DIRS: %d\n", op.ExtractedDirs)
+		if op.SkippedEntries > 0 {
+			fmt.Printf("SKIPPED ENTRIES: %d\n", op.SkippedEntries)
+			for _, entryErr := range op.EntryErrors {
+				fmt.Printf("  ENTRY ERROR: %s\n", entryErr)
+			}
+		}
 		if op.NestedArchives > 0 {
 			fmt.Printf("NESTED: %d\n", op.NestedArchives)
 		}

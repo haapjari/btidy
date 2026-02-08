@@ -69,7 +69,9 @@ func runOrganize(_ *cobra.Command, args []string) error {
 
 	result := execution.Result
 
-	printDetailedOperations(result.Operations, printOrganizeOperation)
+	printDetailedOperations(result.Operations, printOrganizeOperation, func(op organizer.MoveOperation) bool {
+		return op.Error != nil
+	})
 
 	printSummary(
 		fmt.Sprintf("Total files:     %d", result.TotalFiles),

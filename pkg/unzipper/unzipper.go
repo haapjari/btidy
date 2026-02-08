@@ -28,13 +28,15 @@ type ExtractOperation struct {
 	ArchivePath        string
 	ExtractedFiles     int
 	ExtractedDirs      int
+	SkippedEntries     int      // Entries skipped due to per-entry errors (extraction continues)
+	EntryErrors        []string // Human-readable descriptions of per-entry failures
 	NestedArchives     int
 	ExtractionComplete bool
 	DeletedArchive     bool
 	TrashedTo          string // Trash destination for deleted archive (empty when trasher is nil)
 	Skipped            bool
 	SkipReason         string
-	Error              error
+	Error              error // Fatal archive-level error (archive not extracted)
 }
 
 // Result contains results for an unzip run.
@@ -154,6 +156,17 @@ func (u *Unzipper) processArchive(archivePath string) (operation ExtractOperatio
 		return operation, nil
 	}
 
+	// In dry-run mode, nested archives discovered inside other archives have
+	// not been extracted to disk yet.  We cannot peek inside them, but we can
+	// report that they would be processed.
+	if u.dryRun {
+		if _, statErr := os.Lstat(archivePath); os.IsNotExist(statErr) {
+			operation.ExtractionComplete = true
+			operation.DeletedArchive = true
+			return operation, nil
+		}
+	}
+
 	if err := u.validator.ValidatePathForRead(archivePath); err != nil {
 		operation.Error = fmt.Errorf("archive path escapes root: %w", err)
 		return operation, nil
@@ -168,26 +181,30 @@ func (u *Unzipper) processArchive(archivePath string) (operation ExtractOperatio
 
 	destinationDir := filepath.Dir(archivePath)
 	discovered = make([]string, 0)
+	skippedNames := make(map[string]bool)
 
 	for _, file := range reader.File {
 		entryOutcome, entryErr := u.extractEntry(archivePath, destinationDir, file)
+		if entryErr != nil {
+			operation.SkippedEntries++
+			operation.EntryErrors = append(operation.EntryErrors,
+				fmt.Sprintf("%s: %v", file.Name, entryErr))
+			skippedNames[file.Name] = true
+			continue
+		}
+
 		operation.ExtractedFiles += entryOutcome.extractedFiles
 		operation.ExtractedDirs += entryOutcome.extractedDirs
 		if entryOutcome.nestedArchive != "" {
 			discovered = append(discovered, entryOutcome.nestedArchive)
 			operation.NestedArchives++
 		}
-
-		if entryErr != nil {
-			operation.Error = entryErr
-			return operation, nil
-		}
 	}
 
 	// Verify all extracted regular files exist with expected sizes before
 	// deleting the archive. This prevents data loss if extraction was partial.
 	if !u.dryRun {
-		if err := u.verifyExtractedFiles(reader.File, destinationDir); err != nil {
+		if err := u.verifyExtractedFiles(reader.File, destinationDir, skippedNames); err != nil {
 			operation.Error = fmt.Errorf("post-extraction verification failed: %w", err)
 			return operation, nil
 		}
@@ -197,7 +214,7 @@ func (u *Unzipper) processArchive(archivePath string) (operation ExtractOperatio
 	operation.DeletedArchive = true
 
 	if u.dryRun {
-		return operation, nil
+		return operation, discovered
 	}
 
 	trashedTo, trashErr := u.trashOrRemove(archivePath)
@@ -246,8 +263,11 @@ func (u *Unzipper) backupExistingFile(entryPath string) error {
 	return fmt.Errorf("refusing to overwrite existing file: %s", entryPath)
 }
 
-func (u *Unzipper) verifyExtractedFiles(entries []*zip.File, destinationDir string) error {
+func (u *Unzipper) verifyExtractedFiles(entries []*zip.File, destinationDir string, skipped map[string]bool) error {
 	for _, file := range entries {
+		if skipped[file.Name] {
+			continue
+		}
 		if isDirectoryEntry(file) || file.Mode()&os.ModeSymlink != 0 {
 			continue
 		}

@@ -67,6 +67,8 @@ func runRename(_ *cobra.Command, args []string) error {
 			fmt.Printf("RENAME: %s\n", op.OriginalPath)
 			fmt.Printf("    TO: %s\n", op.NewPath)
 		}
+	}, func(op renamer.RenameOperation) bool {
+		return op.Error != nil
 	})
 
 	printSummary(

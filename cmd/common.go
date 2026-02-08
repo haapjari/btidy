@@ -144,15 +144,26 @@ func printSummary(lines ...string) {
 	}
 }
 
-func printDetailedOperations[T any](operations []T, printOperation func(T)) {
-	if !verbose && !dryRun {
+func printDetailedOperations[T any](operations []T, printOperation func(T), isError func(T) bool) {
+	if verbose || dryRun {
+		for _, op := range operations {
+			printOperation(op)
+		}
+		fmt.Println()
 		return
 	}
 
+	// Always print errors even without --verbose so the user can diagnose failures.
+	hasErrors := false
 	for _, op := range operations {
-		printOperation(op)
+		if isError(op) {
+			printOperation(op)
+			hasErrors = true
+		}
 	}
-	fmt.Println()
+	if hasErrors {
+		fmt.Println()
+	}
 }
 
 func printDryRunHint() {

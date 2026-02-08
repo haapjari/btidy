@@ -455,10 +455,17 @@ func TestEndToEndUnzip_ZipSlipBlocked(t *testing.T) {
 		{name: "../outside-sentinel.txt", content: []byte("attack")},
 	})
 
+	// The command succeeds but the zip-slip entry is skipped (not extracted).
 	result := runBinary(t, binPath, "unzip", target)
-	assertCommandFailed(t, result, "unsafe path", "unzip")
+	assertCommandSucceeded(t, "unzip with zip-slip entry", result)
 
-	assertExists(t, archivePath)
+	output := strings.ToLower(result.combinedOutput())
+	if !strings.Contains(output, "entry error") {
+		t.Fatalf("expected output to report skipped zip-slip entry\n%s", result.combinedOutput())
+	}
+	if !strings.Contains(output, "escape") {
+		t.Fatalf("expected output to mention path escape\n%s", result.combinedOutput())
+	}
 
 	outsideAfter, err := os.ReadFile(outsideSentinel)
 	if err != nil {

@@ -61,7 +61,9 @@ func runDuplicate(_ *cobra.Command, args []string) error {
 
 	result := execution.Result
 
-	printDetailedOperations(result.Operations, printDuplicateOperation)
+	printDetailedOperations(result.Operations, printDuplicateOperation, func(op deduplicator.DeleteOperation) bool {
+		return op.Error != nil
+	})
 
 	printSummary(
 		fmt.Sprintf("Total files:      %d", result.TotalFiles),

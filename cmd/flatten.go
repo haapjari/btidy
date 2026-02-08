@@ -65,7 +65,9 @@ func runFlatten(_ *cobra.Command, args []string) error {
 
 	result := execution.Result
 
-	printDetailedOperations(result.Operations, printFlattenOperation)
+	printDetailedOperations(result.Operations, printFlattenOperation, func(op flattener.MoveOperation) bool {
+		return op.Error != nil
+	})
 
 	lines := []string{
 		fmt.Sprintf("Total files:     %d", result.TotalFiles),

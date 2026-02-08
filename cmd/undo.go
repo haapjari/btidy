@@ -59,7 +59,9 @@ func runUndo(_ *cobra.Command, args []string) error {
 	fmt.Printf("Run ID:  %s\n", execution.RunID)
 	fmt.Println()
 
-	printDetailedOperations(execution.Operations, printUndoOperation)
+	printDetailedOperations(execution.Operations, printUndoOperation, func(op usecase.UndoOperation) bool {
+		return op.Error != nil
+	})
 
 	printSummary(
 		fmt.Sprintf("Restored:  %d", execution.RestoredCount),
