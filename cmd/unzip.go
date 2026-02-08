@@ -47,12 +47,7 @@ func runUnzip(_ *cobra.Command, args []string) error {
 			})
 		},
 		func(execution usecase.UnzipExecution) fileCommandExecutionInfo {
-			return fileCommandExecutionInfo{
-				rootDir:         execution.RootDir,
-				fileCount:       execution.FileCount,
-				collectDuration: execution.CollectDuration,
-				snapshotPath:    execution.SnapshotPath,
-			}
+			return infoFromMeta(execution.Meta())
 		},
 		nil,
 	)

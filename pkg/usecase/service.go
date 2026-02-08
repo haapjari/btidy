@@ -13,6 +13,7 @@ import (
 	"btidy/pkg/deduplicator"
 	"btidy/pkg/filelock"
 	"btidy/pkg/flattener"
+	"btidy/pkg/journal"
 	"btidy/pkg/manifest"
 	"btidy/pkg/metadata"
 	"btidy/pkg/organizer"
@@ -64,6 +65,7 @@ type RenameExecution struct {
 	CollectDuration time.Duration
 	Result          renamer.Result
 	SnapshotPath    string
+	JournalPath     string
 }
 
 // FlattenRequest contains inputs for the flatten workflow.
@@ -81,6 +83,7 @@ type FlattenExecution struct {
 	CollectDuration time.Duration
 	Result          flattener.Result
 	SnapshotPath    string
+	JournalPath     string
 }
 
 // DuplicateRequest contains inputs for the duplicate workflow.
@@ -98,6 +101,7 @@ type DuplicateExecution struct {
 	CollectDuration time.Duration
 	Result          deduplicator.Result
 	SnapshotPath    string
+	JournalPath     string
 }
 
 // UnzipRequest contains inputs for the unzip workflow.
@@ -114,6 +118,7 @@ type UnzipExecution struct {
 	CollectDuration time.Duration
 	Result          unzipper.Result
 	SnapshotPath    string
+	JournalPath     string
 }
 
 // ManifestRequest contains inputs for the manifest workflow.
@@ -147,6 +152,56 @@ type OrganizeExecution struct {
 	CollectDuration time.Duration
 	Result          organizer.Result
 	SnapshotPath    string
+	JournalPath     string
+}
+
+// WorkflowMeta contains the common metadata fields shared by all file workflow executions.
+type WorkflowMeta struct {
+	RootDir         string
+	FileCount       int
+	CollectDuration time.Duration
+	SnapshotPath    string
+	JournalPath     string
+}
+
+// Meta returns the common workflow metadata for rename executions.
+func (e RenameExecution) Meta() WorkflowMeta {
+	return WorkflowMeta{
+		RootDir: e.RootDir, FileCount: e.FileCount,
+		CollectDuration: e.CollectDuration, SnapshotPath: e.SnapshotPath, JournalPath: e.JournalPath,
+	}
+}
+
+// Meta returns the common workflow metadata for flatten executions.
+func (e FlattenExecution) Meta() WorkflowMeta {
+	return WorkflowMeta{
+		RootDir: e.RootDir, FileCount: e.FileCount,
+		CollectDuration: e.CollectDuration, SnapshotPath: e.SnapshotPath, JournalPath: e.JournalPath,
+	}
+}
+
+// Meta returns the common workflow metadata for duplicate executions.
+func (e DuplicateExecution) Meta() WorkflowMeta {
+	return WorkflowMeta{
+		RootDir: e.RootDir, FileCount: e.FileCount,
+		CollectDuration: e.CollectDuration, SnapshotPath: e.SnapshotPath, JournalPath: e.JournalPath,
+	}
+}
+
+// Meta returns the common workflow metadata for unzip executions.
+func (e UnzipExecution) Meta() WorkflowMeta {
+	return WorkflowMeta{
+		RootDir: e.RootDir, FileCount: e.FileCount,
+		CollectDuration: e.CollectDuration, SnapshotPath: e.SnapshotPath, JournalPath: e.JournalPath,
+	}
+}
+
+// Meta returns the common workflow metadata for organize executions.
+func (e OrganizeExecution) Meta() WorkflowMeta {
+	return WorkflowMeta{
+		RootDir: e.RootDir, FileCount: e.FileCount,
+		CollectDuration: e.CollectDuration, SnapshotPath: e.SnapshotPath, JournalPath: e.JournalPath,
+	}
 }
 
 // RunOrganize executes the organize workflow.
@@ -164,6 +219,7 @@ func (s *Service) RunOrganize(req OrganizeRequest) (OrganizeExecution, error) {
 		func(op organizer.MoveOperation) (string, error) {
 			return op.OriginalPath, op.Error
 		},
+		organizeJournalEntries,
 	)
 }
 
@@ -182,6 +238,7 @@ func (s *Service) RunRename(req RenameRequest) (RenameExecution, error) {
 		func(op renamer.RenameOperation) (string, error) {
 			return op.OriginalPath, op.Error
 		},
+		renameJournalEntries,
 	)
 }
 
@@ -200,6 +257,7 @@ func (s *Service) RunFlatten(req FlattenRequest) (FlattenExecution, error) {
 		func(op flattener.MoveOperation) (string, error) {
 			return op.OriginalPath, op.Error
 		},
+		flattenJournalEntries,
 	)
 }
 
@@ -218,6 +276,7 @@ func (s *Service) RunDuplicate(req DuplicateRequest) (DuplicateExecution, error)
 		func(op deduplicator.DeleteOperation) (string, error) {
 			return op.Path, op.Error
 		},
+		duplicateJournalEntries,
 	)
 }
 
@@ -236,6 +295,7 @@ func (s *Service) RunUnzip(req UnzipRequest) (UnzipExecution, error) {
 		func(op unzipper.ExtractOperation) (string, error) {
 			return op.ArchivePath, op.Error
 		},
+		unzipJournalEntries,
 	)
 }
 
@@ -324,6 +384,7 @@ type fileWorkflowResult[T any] struct {
 	CollectDuration time.Duration
 	Result          T
 	SnapshotPath    string
+	JournalPath     string
 }
 
 // Workflow invariant: no path is opened or mutated before validator approval.
@@ -332,7 +393,13 @@ type workflowTarget struct {
 	validator *safepath.Validator
 }
 
-func runFileWorkflow[T any](s *Service, targetDir, command string, dryRun bool, execute func(rootDir string, validator *safepath.Validator, files []collector.FileInfo) (T, error)) (fileWorkflowResult[T], error) {
+func runFileWorkflow[T any](
+	s *Service,
+	targetDir, command string,
+	dryRun bool,
+	execute func(rootDir string, validator *safepath.Validator, files []collector.FileInfo) (T, error),
+	toJournalEntries func(T, string) []journal.Entry,
+) (fileWorkflowResult[T], error) {
 	target, err := resolveWorkflowTarget(targetDir)
 	if err != nil {
 		return fileWorkflowResult[T]{}, err
@@ -375,6 +442,15 @@ func runFileWorkflow[T any](s *Service, targetDir, command string, dryRun bool, 
 
 	workflowResult.Result = operationResult
 
+	// Write operation journal unless in dry-run mode.
+	if !dryRun && toJournalEntries != nil {
+		journalPath, journalErr := writeJournal(target, command, toJournalEntries(operationResult, target.rootDir))
+		if journalErr != nil {
+			return fileWorkflowResult[T]{}, fmt.Errorf("failed to write operation journal: %w", journalErr)
+		}
+		workflowResult.JournalPath = journalPath
+	}
+
 	return workflowResult, nil
 }
 
@@ -387,8 +463,9 @@ func runCheckedExecution[T any, E any, O any](
 	command string,
 	operations func(E) []O,
 	operationData func(O) (path string, err error),
+	toJournalEntries func(T, string) []journal.Entry,
 ) (E, error) {
-	workflowResult, err := runFileWorkflow(s, targetDir, command, dryRun, execute)
+	workflowResult, err := runFileWorkflow(s, targetDir, command, dryRun, execute, toJournalEntries)
 	if err != nil {
 		var zero E
 		return zero, err
@@ -656,4 +733,170 @@ func isUnsafePathError(err error) bool {
 	}
 
 	return errors.Is(err, safepath.ErrPathEscape) || errors.Is(err, safepath.ErrSymlinkEscape)
+}
+
+// writeJournal creates a journal file in .btidy/journal/ and writes entries to it.
+func writeJournal(target workflowTarget, command string, entries []journal.Entry) (string, error) {
+	if len(entries) == 0 {
+		return "", nil
+	}
+
+	metaDir, initErr := metadata.Init(target.rootDir, target.validator)
+	if initErr != nil {
+		return "", fmt.Errorf("initialize metadata: %w", initErr)
+	}
+
+	runID := metaDir.RunID(command)
+	journalPath := metaDir.JournalPath(runID)
+
+	mkdirErr := target.validator.SafeMkdirAll(filepath.Dir(journalPath))
+	if mkdirErr != nil {
+		return "", fmt.Errorf("create journal directory: %w", mkdirErr)
+	}
+
+	writer, writerErr := journal.NewWriter(journalPath)
+	if writerErr != nil {
+		return "", fmt.Errorf("create journal writer: %w", writerErr)
+	}
+	defer writer.Close()
+
+	for i := range entries {
+		if logErr := writer.Log(entries[i]); logErr != nil {
+			return journalPath, fmt.Errorf("write journal entry: %w", logErr)
+		}
+	}
+
+	return journalPath, nil
+}
+
+// relPath computes a relative path from rootDir, returning the absolute path
+// on error as a fallback.
+func relPath(rootDir, absPath string) string {
+	rel, relErr := filepath.Rel(rootDir, absPath)
+	if relErr != nil {
+		return absPath
+	}
+	return rel
+}
+
+// renameJournalEntries converts rename operations to journal entries.
+func renameJournalEntries(result renamer.Result, rootDir string) []journal.Entry {
+	var entries []journal.Entry
+	for i := range result.Operations {
+		op := &result.Operations[i]
+		if op.Error != nil || op.Skipped {
+			continue
+		}
+		if op.NewPath != "" && op.NewPath != op.OriginalPath {
+			entries = append(entries, journal.Entry{
+				Type:    "rename",
+				Source:  relPath(rootDir, op.OriginalPath),
+				Dest:    relPath(rootDir, op.NewPath),
+				Success: true,
+			})
+		}
+		if op.Deleted && op.TrashedTo != "" {
+			entries = append(entries, journal.Entry{
+				Type:    "trash",
+				Source:  relPath(rootDir, op.OriginalPath),
+				Dest:    relPath(rootDir, op.TrashedTo),
+				Success: true,
+			})
+		}
+	}
+	return entries
+}
+
+// flattenJournalEntries converts flatten operations to journal entries.
+func flattenJournalEntries(result flattener.Result, rootDir string) []journal.Entry {
+	var entries []journal.Entry
+	for _, op := range result.Operations {
+		if op.Error != nil || op.Skipped {
+			continue
+		}
+		if op.Duplicate && op.TrashedTo != "" {
+			entries = append(entries, journal.Entry{
+				Type:    "trash",
+				Source:  relPath(rootDir, op.OriginalPath),
+				Dest:    relPath(rootDir, op.TrashedTo),
+				Hash:    op.Hash,
+				Success: true,
+			})
+			continue
+		}
+		if op.NewPath != "" && op.NewPath != op.OriginalPath {
+			entries = append(entries, journal.Entry{
+				Type:    "rename",
+				Source:  relPath(rootDir, op.OriginalPath),
+				Dest:    relPath(rootDir, op.NewPath),
+				Success: true,
+			})
+		}
+	}
+	return entries
+}
+
+// duplicateJournalEntries converts duplicate operations to journal entries.
+func duplicateJournalEntries(result deduplicator.Result, rootDir string) []journal.Entry {
+	var entries []journal.Entry
+	for _, op := range result.Operations {
+		if op.Error != nil || op.Skipped {
+			continue
+		}
+		if op.TrashedTo != "" {
+			entries = append(entries, journal.Entry{
+				Type:    "trash",
+				Source:  relPath(rootDir, op.Path),
+				Dest:    relPath(rootDir, op.TrashedTo),
+				Hash:    op.Hash,
+				Success: true,
+			})
+		}
+	}
+	return entries
+}
+
+// unzipJournalEntries converts unzip operations to journal entries.
+func unzipJournalEntries(result unzipper.Result, rootDir string) []journal.Entry {
+	var entries []journal.Entry
+	for _, op := range result.Operations {
+		if op.Error != nil || op.Skipped {
+			continue
+		}
+		if op.ExtractionComplete {
+			entries = append(entries, journal.Entry{
+				Type:    "extract",
+				Source:  relPath(rootDir, op.ArchivePath),
+				Success: true,
+			})
+		}
+		if op.DeletedArchive && op.TrashedTo != "" {
+			entries = append(entries, journal.Entry{
+				Type:    "trash",
+				Source:  relPath(rootDir, op.ArchivePath),
+				Dest:    relPath(rootDir, op.TrashedTo),
+				Success: true,
+			})
+		}
+	}
+	return entries
+}
+
+// organizeJournalEntries converts organize operations to journal entries.
+func organizeJournalEntries(result organizer.Result, rootDir string) []journal.Entry {
+	var entries []journal.Entry
+	for _, op := range result.Operations {
+		if op.Error != nil || op.Skipped {
+			continue
+		}
+		if op.NewPath != "" && op.NewPath != op.OriginalPath {
+			entries = append(entries, journal.Entry{
+				Type:    "rename",
+				Source:  relPath(rootDir, op.OriginalPath),
+				Dest:    relPath(rootDir, op.NewPath),
+				Success: true,
+			})
+		}
+	}
+	return entries
 }

@@ -13,6 +13,7 @@ import (
 
 	"btidy/internal/testutil"
 	"btidy/pkg/filelock"
+	"btidy/pkg/journal"
 	"btidy/pkg/manifest"
 )
 
@@ -490,4 +491,201 @@ func TestService_RunRename_LockPreventsConflict(t *testing.T) {
 	})
 	require.Error(t, err, "should fail when lock is held")
 	assert.Contains(t, err.Error(), "another btidy process")
+}
+
+func TestService_RunDuplicate_WritesJournal(t *testing.T) {
+	t.Parallel()
+
+	tmpDir := t.TempDir()
+	modTime := time.Date(2018, 6, 15, 12, 0, 0, 0, time.UTC)
+	testutil.CreateFileWithModTime(t, filepath.Join(tmpDir, "a.txt"), "same-content", modTime)
+	testutil.CreateFileWithModTime(t, filepath.Join(tmpDir, "b.txt"), "same-content", modTime)
+
+	s := New(Options{NoSnapshot: true})
+	execution, err := s.RunDuplicate(DuplicateRequest{
+		TargetDir: tmpDir,
+		DryRun:    false,
+		Workers:   2,
+	})
+	require.NoError(t, err)
+
+	assert.NotEmpty(t, execution.JournalPath, "journal path should be set")
+	_, err = os.Stat(execution.JournalPath)
+	require.NoError(t, err, "journal file should exist")
+
+	reader := journal.NewReader(execution.JournalPath)
+	entries, err := reader.Entries()
+	require.NoError(t, err)
+
+	require.Len(t, entries, 1, "should have one trash entry for the duplicate")
+	assert.Equal(t, "trash", entries[0].Type)
+	assert.True(t, entries[0].Success)
+	assert.NotEmpty(t, entries[0].Hash, "trash entry should include content hash")
+	assert.NotEmpty(t, entries[0].Source, "source path should not be empty")
+	assert.NotEmpty(t, entries[0].Dest, "dest (trash path) should not be empty")
+
+	// Verify paths are relative (not absolute).
+	assert.False(t, filepath.IsAbs(entries[0].Source), "source should be a relative path")
+	assert.False(t, filepath.IsAbs(entries[0].Dest), "dest should be a relative path")
+}
+
+func TestService_RunFlatten_WritesJournal(t *testing.T) {
+	t.Parallel()
+
+	tmpDir := t.TempDir()
+	modTime := time.Date(2018, 6, 15, 12, 0, 0, 0, time.UTC)
+	testutil.CreateFileWithModTime(t, filepath.Join(tmpDir, "sub", "file.txt"), "content", modTime)
+
+	s := New(Options{NoSnapshot: true})
+	execution, err := s.RunFlatten(FlattenRequest{
+		TargetDir: tmpDir,
+		DryRun:    false,
+		Workers:   2,
+	})
+	require.NoError(t, err)
+
+	assert.NotEmpty(t, execution.JournalPath, "journal path should be set")
+
+	reader := journal.NewReader(execution.JournalPath)
+	entries, err := reader.Entries()
+	require.NoError(t, err)
+
+	require.Len(t, entries, 1, "should have one rename entry for the moved file")
+	assert.Equal(t, "rename", entries[0].Type)
+	assert.True(t, entries[0].Success)
+	assert.Equal(t, filepath.Join("sub", "file.txt"), entries[0].Source)
+	assert.Equal(t, "file.txt", entries[0].Dest)
+}
+
+func TestService_RunRename_DryRunSkipsJournal(t *testing.T) {
+	t.Parallel()
+
+	tmpDir := t.TempDir()
+	modTime := time.Date(2018, 6, 15, 12, 0, 0, 0, time.UTC)
+	testutil.CreateFileWithModTime(t, filepath.Join(tmpDir, "My Document.pdf"), "content", modTime)
+
+	s := New(Options{NoSnapshot: true})
+	execution, err := s.RunRename(RenameRequest{
+		TargetDir: tmpDir,
+		DryRun:    true,
+	})
+	require.NoError(t, err)
+
+	assert.Empty(t, execution.JournalPath, "journal path should be empty for dry-run")
+
+	// Verify no journal directory was created.
+	_, err = os.Stat(filepath.Join(tmpDir, ".btidy", "journal"))
+	assert.True(t, os.IsNotExist(err), "no journal directory should be created in dry-run")
+}
+
+func TestService_RunRename_WritesJournal(t *testing.T) {
+	t.Parallel()
+
+	tmpDir := t.TempDir()
+	modTime := time.Date(2018, 6, 15, 12, 0, 0, 0, time.UTC)
+	testutil.CreateFileWithModTime(t, filepath.Join(tmpDir, "My Document.pdf"), "content", modTime)
+
+	s := New(Options{NoSnapshot: true})
+	execution, err := s.RunRename(RenameRequest{
+		TargetDir: tmpDir,
+		DryRun:    false,
+	})
+	require.NoError(t, err)
+
+	assert.NotEmpty(t, execution.JournalPath, "journal path should be set")
+
+	reader := journal.NewReader(execution.JournalPath)
+	entries, err := reader.Entries()
+	require.NoError(t, err)
+
+	require.Len(t, entries, 1, "should have one rename entry")
+	assert.Equal(t, "rename", entries[0].Type)
+	assert.True(t, entries[0].Success)
+	assert.Equal(t, "My Document.pdf", entries[0].Source)
+	assert.Equal(t, "2018-06-15_my_document.pdf", entries[0].Dest)
+}
+
+func TestService_RunOrganize_WritesJournal(t *testing.T) {
+	t.Parallel()
+
+	tmpDir := t.TempDir()
+	modTime := time.Date(2018, 6, 15, 12, 0, 0, 0, time.UTC)
+	testutil.CreateFileWithModTime(t, filepath.Join(tmpDir, "photo.jpg"), "image-data", modTime)
+	testutil.CreateFileWithModTime(t, filepath.Join(tmpDir, "notes.txt"), "text-data", modTime)
+
+	s := New(Options{NoSnapshot: true})
+	execution, err := s.RunOrganize(OrganizeRequest{
+		TargetDir: tmpDir,
+		DryRun:    false,
+	})
+	require.NoError(t, err)
+
+	assert.NotEmpty(t, execution.JournalPath, "journal path should be set")
+
+	reader := journal.NewReader(execution.JournalPath)
+	entries, err := reader.Entries()
+	require.NoError(t, err)
+
+	require.Len(t, entries, 2, "should have two rename entries")
+
+	// Collect entries by source for stable assertions.
+	entryBySource := make(map[string]journal.Entry, len(entries))
+	for _, e := range entries {
+		entryBySource[e.Source] = e
+	}
+
+	jpgEntry, ok := entryBySource["photo.jpg"]
+	require.True(t, ok, "should have entry for photo.jpg")
+	assert.Equal(t, "rename", jpgEntry.Type)
+	assert.True(t, jpgEntry.Success)
+	assert.Equal(t, filepath.Join("jpg", "photo.jpg"), jpgEntry.Dest)
+
+	txtEntry, ok := entryBySource["notes.txt"]
+	require.True(t, ok, "should have entry for notes.txt")
+	assert.Equal(t, "rename", txtEntry.Type)
+	assert.True(t, txtEntry.Success)
+	assert.Equal(t, filepath.Join("txt", "notes.txt"), txtEntry.Dest)
+}
+
+func TestService_RunUnzip_WritesJournal(t *testing.T) {
+	t.Parallel()
+
+	tmpDir := t.TempDir()
+	archivePath := filepath.Join(tmpDir, "docs.zip")
+	writeZipArchive(t, archivePath, []zipFixtureEntry{
+		{name: "readme.txt", content: []byte("hello")},
+	})
+
+	s := New(Options{NoSnapshot: true})
+	execution, err := s.RunUnzip(UnzipRequest{
+		TargetDir: tmpDir,
+		DryRun:    false,
+	})
+	require.NoError(t, err)
+
+	assert.NotEmpty(t, execution.JournalPath, "journal path should be set")
+
+	reader := journal.NewReader(execution.JournalPath)
+	entries, err := reader.Entries()
+	require.NoError(t, err)
+
+	// Should have an extract entry and a trash entry (deleted archive).
+	require.Len(t, entries, 2, "should have extract + trash entries")
+
+	// Collect entries by type for stable assertions.
+	entryByType := make(map[string]journal.Entry, len(entries))
+	for _, e := range entries {
+		entryByType[e.Type] = e
+	}
+
+	extractEntry, ok := entryByType["extract"]
+	require.True(t, ok, "should have extract entry")
+	assert.True(t, extractEntry.Success)
+	assert.Equal(t, "docs.zip", extractEntry.Source)
+
+	trashEntry, ok := entryByType["trash"]
+	require.True(t, ok, "should have trash entry for deleted archive")
+	assert.True(t, trashEntry.Success)
+	assert.Equal(t, "docs.zip", trashEntry.Source)
+	assert.NotEmpty(t, trashEntry.Dest)
 }

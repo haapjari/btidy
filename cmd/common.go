@@ -59,6 +59,17 @@ type fileCommandExecutionInfo struct {
 	fileCount       int
 	collectDuration time.Duration
 	snapshotPath    string
+	journalPath     string
+}
+
+func infoFromMeta(m usecase.WorkflowMeta) fileCommandExecutionInfo {
+	return fileCommandExecutionInfo{
+		rootDir:         m.RootDir,
+		fileCount:       m.FileCount,
+		collectDuration: m.CollectDuration,
+		snapshotPath:    m.SnapshotPath,
+		journalPath:     m.JournalPath,
+	}
 }
 
 func runFileCommand[T any](
@@ -82,6 +93,9 @@ func runFileCommand[T any](
 	printCommandHeader(command, info.rootDir)
 	if info.snapshotPath != "" {
 		fmt.Printf("Snapshot: %s\n", info.snapshotPath)
+	}
+	if info.journalPath != "" {
+		fmt.Printf("Journal: %s\n", info.journalPath)
 	}
 	if printExtraHeader != nil {
 		printExtraHeader()
