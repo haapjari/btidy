@@ -86,3 +86,7 @@ make test
 make test-e2e
 ./scripts/e2e.sh
 ```
+
+# License
+
+MIT
