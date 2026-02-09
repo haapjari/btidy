@@ -60,7 +60,7 @@ func runUnzip(_ *cobra.Command, args []string) error {
 
 	result := execution.Result
 	if result.ArchivesFound == 0 {
-		fmt.Println("No zip archives to process.")
+		fmt.Println("no zip archives to process")
 		fmt.Println()
 	}
 
@@ -69,13 +69,13 @@ func runUnzip(_ *cobra.Command, args []string) error {
 	})
 
 	printSummary(
-		fmt.Sprintf("Total files:        %d", result.TotalFiles),
-		fmt.Sprintf("Archives found:     %d", result.ArchivesFound),
-		fmt.Sprintf("Archives processed: %d", result.ArchivesProcessed),
-		fmt.Sprintf("Archives extracted: %d", result.ExtractedArchives),
-		fmt.Sprintf("Archives deleted:   %d", result.DeletedArchives),
-		fmt.Sprintf("Files extracted:    %d", result.ExtractedFiles),
-		fmt.Sprintf("Dir entries:        %d", result.ExtractedDirs),
+		fmt.Sprintf("Total Files:        %d", result.TotalFiles),
+		fmt.Sprintf("Archives Found:     %d", result.ArchivesFound),
+		fmt.Sprintf("Archives Processed: %d", result.ArchivesProcessed),
+		fmt.Sprintf("Archives Extracted: %d", result.ExtractedArchives),
+		fmt.Sprintf("Archives Deleted:   %d", result.DeletedArchives),
+		fmt.Sprintf("Files Extracted:    %d", result.ExtractedFiles),
+		fmt.Sprintf("Dir Entries:        %d", result.ExtractedDirs),
 		fmt.Sprintf("Errors:             %d", result.ErrorCount),
 	)
 	printDryRunHint()

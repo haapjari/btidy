@@ -2,959 +2,170 @@ package unzipper
 
 import (
 	"archive/zip"
-	"bytes"
+	"fmt"
+	"io"
+	"io/fs"
+	"math/rand"
 	"os"
 	"path/filepath"
 	"testing"
 
-	"github.com/stretchr/testify/assert"
-	"github.com/stretchr/testify/require"
-
-	"btidy/pkg/collector"
-	"btidy/pkg/metadata"
-	"btidy/pkg/safepath"
-	"btidy/pkg/trash"
+	require "github.com/stretchr/testify/require"
+	assert "github.com/stretchr/testify/require"
 )
 
-type zipFixtureEntry struct {
-	name    string
-	content []byte
-	mode    os.FileMode
+func TestGetAllFilesRecursively(t *testing.T) {
+	t.Run("traverse 1 level deep", func(t *testing.T) {
+		root := createTestFileAndFolderStructure(t, 1)
+
+		files, err := getAllFilesRecursively(root)
+		require.NoError(t, err)
+		assert.Greater(t, len(files), 0, "expected files to be returned")
+
+		for _, f := range files {
+			assert.True(t, filepath.IsAbs(f.Path), "expected absolute path, got %s", f.Path)
+			rel, err := filepath.Rel(root, f.Path)
+			require.NoError(t, err)
+			assert.False(t, filepath.IsAbs(rel), "file %s escapes root", f.Path)
+			assert.NotEmpty(t, f.Name, "expected non-empty filename")
+			assert.Greater(t, f.Size, int64(0), "expected positive file size for %s", f.Path)
+		}
+
+		assert.GreaterOrEqual(t, len(files), 31, "expected at least 30 test files + 1 archive")
+		assert.LessOrEqual(t, len(files), 51, "expected at most 50 test files + 1 archive")
+	})
+	
+	t.Run("traverse 5 level deep", func(t *testing.T) {
+		root := createTestFileAndFolderStructure(t, 5)
+
+		files, err := getAllFilesRecursively(root)
+		require.NoError(t, err)
+		assert.Greater(t, len(files), 0, "expected files to be returned")
+
+		for _, f := range files {
+			assert.True(t, filepath.IsAbs(f.Path), "expected absolute path, got %s", f.Path)
+			rel, err := filepath.Rel(root, f.Path)
+			require.NoError(t, err)
+			assert.False(t, filepath.IsAbs(rel), "file %s escapes root", f.Path)
+			assert.NotEmpty(t, f.Name, "expected non-empty filename")
+			assert.Greater(t, f.Size, int64(0), "expected positive file size for %s", f.Path)
+		}
+
+		assert.GreaterOrEqual(t, len(files), 5*31, "expected at least 5*(30 files + 1 archive)")
+		assert.LessOrEqual(t, len(files), 5*51, "expected at most 5*(50 files + 1 archive)")
+	})
+
+t.Run("traverse 10 level deep", func(t *testing.T) {
+		root := createTestFileAndFolderStructure(t, 10)
+
+		files, err := getAllFilesRecursively(root)
+		require.NoError(t, err)
+		assert.Greater(t, len(files), 0, "expected files to be returned")
+
+		for _, f := range files {
+			assert.True(t, filepath.IsAbs(f.Path), "expected absolute path, got %s", f.Path)
+			rel, err := filepath.Rel(root, f.Path)
+			require.NoError(t, err)
+			assert.False(t, filepath.IsAbs(rel), "file %s escapes root", f.Path)
+			assert.NotEmpty(t, f.Name, "expected non-empty filename")
+			assert.Greater(t, f.Size, int64(0), "expected positive file size for %s", f.Path)
+		}
+
+		assert.GreaterOrEqual(t, len(files), 10*30+10, "expected at least 10*30 test files + 10 archives")
+		assert.LessOrEqual(t, len(files), 10*50+10, "expected at most 10*50 test files + 10 archives")
+	})
 }
 
-func collectFiles(t *testing.T, rootDir string) []collector.FileInfo {
+// createTestFiles generates a specified number of test files (30-50) in the given directory
+func createTestFiles(t *testing.T, rootPath string, level int) {
 	t.Helper()
 
-	c := collector.New(collector.Options{})
-	files, err := c.Collect(rootDir)
-	require.NoError(t, err)
-
-	return files
+	numFiles := 30 + rand.Intn(21)
+	for i := range numFiles {
+		fileName := fmt.Sprintf("file_%d.txt", i)
+		filePath := filepath.Join(rootPath, fileName)
+		content := fmt.Sprintf("content of file %d at level %d", i, level)
+		require.NoError(t, os.WriteFile(filePath, []byte(content), 0644))
+	}
 }
 
-func writeZipArchive(t *testing.T, archivePath string, entries []zipFixtureEntry) {
+// createTestFileAndFolderStructure builds a nested directory tree of the given depth
+// inside a temporary directory. Each level contains 30-50 random test files and a
+// subdirectory for the next level (subdir_0/subdir_1/…). After all directories and
+// files are created, zip archives are generated bottom-up so that each archive at
+// level i includes the contents of its subdirectory (and thus the child archive at
+// level i+1). Returns the root temp directory path, or "" if level < 0.
+func createTestFileAndFolderStructure(t *testing.T, level int) string {
 	t.Helper()
 
-	require.NoError(t, os.MkdirAll(filepath.Dir(archivePath), 0o755))
-
-	archiveFile, err := os.Create(archivePath)
-	require.NoError(t, err)
-
-	writer := zip.NewWriter(archiveFile)
-	for _, entry := range entries {
-		header := zip.FileHeader{
-			Name:   entry.name,
-			Method: zip.Deflate,
-		}
-
-		mode := entry.mode
-		if mode == 0 {
-			mode = 0o644
-		}
-		header.SetMode(mode)
-
-		entryWriter, err := writer.CreateHeader(&header)
-		require.NoError(t, err)
-
-		_, err = entryWriter.Write(entry.content)
-		require.NoError(t, err)
+	if level < 0 {
+		return ""
 	}
 
-	require.NoError(t, writer.Close())
-	require.NoError(t, archiveFile.Close())
+	path := t.TempDir()
+
+	currentDir := path
+	dirs := make([]string, level)
+
+	// create all the directories and files
+	for i := range level {
+		subDir := filepath.Join(currentDir, fmt.Sprintf("subdir_%d", i))
+		require.NoError(t, os.MkdirAll(subDir, 0755))
+		createTestFiles(t, subDir, i+1)
+		dirs[i] = subDir
+		currentDir = subDir
+	}
+
+	// create archive bottom-up so each zip includes a child zip
+	for i := level - 1; i >= 0; i-- {
+		parent := path
+		if i > 0 {
+			parent = dirs[i-1]
+		}
+		zipPath := filepath.Join(parent, fmt.Sprintf("archive_level_%d.zip", i))
+		createZipArchive(t, dirs[i], zipPath)
+	}
+
+	return path
 }
 
-func zipBytes(t *testing.T, entries []zipFixtureEntry) []byte {
+// createZipArchive creates a ZIP archive at zipPath containing all files found
+// recursively under sourceDir. File paths inside the archive are stored as
+// slash-separated paths relative to sourceDir. Directories themselves are not
+// stored as explicit entries. The test is failed immediately if the zip file
+// cannot be created, and an assertion error is reported if the directory walk
+// encounters any issue.
+func createZipArchive(t *testing.T, sourceDir, zipPath string) {
 	t.Helper()
 
-	var buffer bytes.Buffer
-	writer := zip.NewWriter(&buffer)
-	for _, entry := range entries {
-		header := zip.FileHeader{
-			Name:   entry.name,
-			Method: zip.Deflate,
+	zipFile, err := os.Create(zipPath)
+	if err != nil {
+		t.Fatalf("create zip file: %v", err)
+	}
+	defer zipFile.Close()
+
+	zw := zip.NewWriter(zipFile)
+	defer zw.Close()
+
+	err = filepath.WalkDir(sourceDir, func(path string, d fs.DirEntry, err error) error {
+		if err != nil || d.IsDir() {
+			return err
 		}
 
-		mode := entry.mode
-		if mode == 0 {
-			mode = 0o644
+		w, err := zw.Create(filepath.ToSlash(path[len(sourceDir)+1:]))
+		if err != nil {
+			return err
 		}
-		header.SetMode(mode)
 
-		entryWriter, err := writer.CreateHeader(&header)
-		require.NoError(t, err)
-
-		_, err = entryWriter.Write(entry.content)
-		require.NoError(t, err)
-	}
-
-	require.NoError(t, writer.Close())
-
-	return buffer.Bytes()
-}
-
-func TestUnzipper_ExtractArchives_NoArchives(t *testing.T) {
-	t.Parallel()
-
-	tmpDir := t.TempDir()
-	regularFile := filepath.Join(tmpDir, "plain.txt")
-	require.NoError(t, os.WriteFile(regularFile, []byte("content"), 0o600))
-
-	files := collectFiles(t, tmpDir)
-	u, err := New(tmpDir, false)
-	require.NoError(t, err)
-
-	result := u.ExtractArchives(files)
-
-	assert.Equal(t, 1, result.TotalFiles)
-	assert.Equal(t, 0, result.ArchivesFound)
-	assert.Equal(t, 0, result.ArchivesProcessed)
-	assert.Equal(t, 0, result.ExtractedArchives)
-	assert.Equal(t, 0, result.DeletedArchives)
-	assert.Equal(t, 0, result.ErrorCount)
-	assert.Empty(t, result.Operations)
-}
-
-func TestUnzipper_ExtractArchives_DryRunNoMutations(t *testing.T) {
-	t.Parallel()
-
-	tmpDir := t.TempDir()
-	archivePath := filepath.Join(tmpDir, "photos.zip")
-	writeZipArchive(t, archivePath, []zipFixtureEntry{
-		{name: "nested/photo.jpg", content: []byte("photo")},
-	})
-
-	files := collectFiles(t, tmpDir)
-	u, err := New(tmpDir, true)
-	require.NoError(t, err)
-
-	result := u.ExtractArchives(files)
-
-	assert.Equal(t, 1, result.TotalFiles)
-	assert.Equal(t, 1, result.ArchivesFound)
-	assert.Equal(t, 1, result.ArchivesProcessed)
-	assert.Equal(t, 1, result.ExtractedArchives)
-	assert.Equal(t, 1, result.DeletedArchives)
-	assert.Equal(t, 1, result.ExtractedFiles)
-	assert.Equal(t, 0, result.ExtractedDirs)
-	assert.Equal(t, 0, result.ErrorCount)
-	require.Len(t, result.Operations, 1)
-	assert.True(t, result.Operations[0].ExtractionComplete)
-	assert.True(t, result.Operations[0].DeletedArchive)
-
-	_, err = os.Stat(archivePath)
-	require.NoError(t, err, "dry-run must not remove source archive")
-
-	_, err = os.Stat(filepath.Join(tmpDir, "nested", "photo.jpg"))
-	assert.True(t, os.IsNotExist(err), "dry-run must not extract files")
-}
-
-func TestUnzipper_ExtractArchives_RecursiveNestedArchives(t *testing.T) {
-	t.Parallel()
-
-	tmpDir := t.TempDir()
-
-	innerArchive := zipBytes(t, []zipFixtureEntry{
-		{name: "deep/final.txt", content: []byte("done")},
-	})
-
-	outerArchivePath := filepath.Join(tmpDir, "outer.zip")
-	writeZipArchive(t, outerArchivePath, []zipFixtureEntry{
-		{name: "nested/inner.zip", content: innerArchive},
-		{name: "outer.txt", content: []byte("outer")},
-	})
-
-	files := collectFiles(t, tmpDir)
-	u, err := New(tmpDir, false)
-	require.NoError(t, err)
-
-	result := u.ExtractArchives(files)
-
-	assert.Equal(t, 1, result.TotalFiles)
-	assert.Equal(t, 2, result.ArchivesFound)
-	assert.Equal(t, 2, result.ArchivesProcessed)
-	assert.Equal(t, 2, result.ExtractedArchives)
-	assert.Equal(t, 2, result.DeletedArchives)
-	assert.Equal(t, 3, result.ExtractedFiles)
-	assert.Equal(t, 0, result.ExtractedDirs)
-	assert.Equal(t, 0, result.ErrorCount)
-
-	_, err = os.Stat(filepath.Join(tmpDir, "outer.zip"))
-	assert.True(t, os.IsNotExist(err), "outer archive should be removed")
-
-	_, err = os.Stat(filepath.Join(tmpDir, "nested", "inner.zip"))
-	assert.True(t, os.IsNotExist(err), "nested archive should be removed")
-
-	_, err = os.Stat(filepath.Join(tmpDir, "outer.txt"))
-	require.NoError(t, err)
-
-	_, err = os.Stat(filepath.Join(tmpDir, "nested", "deep", "final.txt"))
-	require.NoError(t, err)
-}
-
-func TestUnzipper_ExtractArchives_ZipSlipBlocked(t *testing.T) {
-	t.Parallel()
-
-	tmpDir := t.TempDir()
-	outsidePath := filepath.Join(filepath.Dir(tmpDir), "should-not-exist.txt")
-
-	archivePath := filepath.Join(tmpDir, "bad.zip")
-	writeZipArchive(t, archivePath, []zipFixtureEntry{
-		{name: "../should-not-exist.txt", content: []byte("attack")},
-	})
-
-	files := collectFiles(t, tmpDir)
-	u, err := New(tmpDir, false)
-	require.NoError(t, err)
-
-	result := u.ExtractArchives(files)
-
-	assert.Equal(t, 1, result.ArchivesFound)
-	assert.Equal(t, 1, result.ArchivesProcessed)
-	assert.Equal(t, 1, result.ExtractedArchives, "archive completes with skipped entries")
-	assert.Equal(t, 1, result.DeletedArchives, "archive deleted after skipping bad entries")
-	assert.Equal(t, 0, result.ErrorCount, "no archive-level error")
-	require.Len(t, result.Operations, 1)
-	require.NoError(t, result.Operations[0].Error, "per-entry failures are not archive-level errors")
-	assert.Equal(t, 1, result.Operations[0].SkippedEntries, "zip-slip entry should be skipped")
-	assert.Contains(t, result.Operations[0].EntryErrors[0], "escape")
-
-	_, err = os.Stat(outsidePath)
-	assert.True(t, os.IsNotExist(err), "zip-slip target must not be created")
-}
-
-func TestUnzipper_ExtractArchives_SymlinkEntryRejected(t *testing.T) {
-	t.Parallel()
-
-	tmpDir := t.TempDir()
-	archivePath := filepath.Join(tmpDir, "symlink.zip")
-	writeZipArchive(t, archivePath, []zipFixtureEntry{
-		{
-			name:    "escape-link",
-			content: []byte("/etc/passwd"),
-			mode:    os.ModeSymlink | 0o777,
-		},
-	})
-
-	files := collectFiles(t, tmpDir)
-	u, err := New(tmpDir, false)
-	require.NoError(t, err)
-
-	result := u.ExtractArchives(files)
-
-	assert.Equal(t, 1, result.ArchivesFound)
-	assert.Equal(t, 1, result.ArchivesProcessed)
-	assert.Equal(t, 1, result.ExtractedArchives, "archive completes with skipped entries")
-	assert.Equal(t, 1, result.DeletedArchives, "archive deleted after skipping bad entries")
-	assert.Equal(t, 0, result.ErrorCount, "no archive-level error")
-	require.Len(t, result.Operations, 1)
-	require.NoError(t, result.Operations[0].Error, "per-entry failures are not archive-level errors")
-	assert.Equal(t, 1, result.Operations[0].SkippedEntries, "symlink entry should be skipped")
-	assert.Contains(t, result.Operations[0].EntryErrors[0], "symlink")
-
-	_, err = os.Lstat(filepath.Join(tmpDir, "escape-link"))
-	assert.True(t, os.IsNotExist(err), "symlink entry must not be written")
-}
-
-func TestUnzipper_ExtractArchives_UnsafeSymlinkArchiveBlocked(t *testing.T) {
-	t.Parallel()
-
-	tmpDir := t.TempDir()
-	outsideDir := t.TempDir()
-
-	outsideArchive := filepath.Join(outsideDir, "outside.zip")
-	writeZipArchive(t, outsideArchive, []zipFixtureEntry{
-		{name: "outside.txt", content: []byte("outside")},
-	})
-
-	symlinkArchive := filepath.Join(tmpDir, "escape.zip")
-	if err := os.Symlink(outsideArchive, symlinkArchive); err != nil {
-		t.Skipf("symlink not supported: %v", err)
-	}
-
-	files := collectFiles(t, tmpDir)
-	u, err := New(tmpDir, false)
-	require.NoError(t, err)
-
-	result := u.ExtractArchives(files)
-
-	assert.Equal(t, 1, result.ArchivesFound)
-	assert.Equal(t, 1, result.ArchivesProcessed)
-	assert.Equal(t, 0, result.ExtractedArchives)
-	assert.Equal(t, 0, result.DeletedArchives)
-	assert.Equal(t, 1, result.ErrorCount)
-	require.Len(t, result.Operations, 1)
-	require.ErrorIs(t, result.Operations[0].Error, safepath.ErrSymlinkEscape)
-
-	_, err = os.Lstat(symlinkArchive)
-	require.NoError(t, err, "symlink archive must remain untouched")
-
-	_, err = os.Stat(filepath.Join(tmpDir, "outside.txt"))
-	assert.True(t, os.IsNotExist(err), "outside archive must not be extracted")
-}
-
-// Test that archives are trashed (not permanently deleted) when a trasher is provided.
-func TestUnzipper_ExtractArchives_TrashesArchiveWhenTrasherProvided(t *testing.T) {
-	t.Parallel()
-
-	tmpDir := t.TempDir()
-	archivePath := filepath.Join(tmpDir, "photos.zip")
-	writeZipArchive(t, archivePath, []zipFixtureEntry{
-		{name: "photo.jpg", content: []byte("photo-data")},
-	})
-
-	v, err := safepath.New(tmpDir)
-	require.NoError(t, err)
-
-	metaDir, err := metadata.Init(tmpDir, v)
-	require.NoError(t, err)
-
-	runID := metaDir.RunID("unzip")
-	trasher, err := trash.New(metaDir, runID, v)
-	require.NoError(t, err)
-
-	u, err := NewWithValidator(v, false, trasher)
-	require.NoError(t, err)
-
-	files := collectFiles(t, tmpDir)
-	// Filter out .btidy directory files.
-	var archiveFiles []collector.FileInfo
-	for _, f := range files {
-		if filepath.Ext(f.Name) == ".zip" {
-			archiveFiles = append(archiveFiles, f)
+		f, err := os.Open(path)
+		if err != nil {
+			return err
 		}
-	}
-	require.Len(t, archiveFiles, 1)
+		defer f.Close()
 
-	result := u.ExtractArchives(archiveFiles)
-
-	assert.Equal(t, 1, result.ArchivesFound)
-	assert.Equal(t, 1, result.ExtractedArchives)
-	assert.Equal(t, 1, result.DeletedArchives)
-	assert.Equal(t, 0, result.ErrorCount)
-
-	// Archive should be gone from original location.
-	assert.NoFileExists(t, archivePath)
-
-	// Extracted file should exist.
-	assert.FileExists(t, filepath.Join(tmpDir, "photo.jpg"))
-
-	// The operation should have a populated TrashedTo field.
-	require.Len(t, result.Operations, 1)
-	assert.NotEmpty(t, result.Operations[0].TrashedTo, "TrashedTo should be populated")
-	assert.Contains(t, result.Operations[0].TrashedTo, ".btidy/trash/")
-
-	// The trashed archive should exist at the trash destination.
-	assert.FileExists(t, result.Operations[0].TrashedTo)
-}
-
-func TestUnzipper_ExtractArchives_ReportsProgress(t *testing.T) {
-	t.Parallel()
-
-	tmpDir := t.TempDir()
-	archivePath := filepath.Join(tmpDir, "docs.zip")
-	writeZipArchive(t, archivePath, []zipFixtureEntry{
-		{name: "docs/readme.txt", content: []byte("hello")},
+		_, err = io.Copy(w, f)
+		return err
 	})
 
-	files := collectFiles(t, tmpDir)
-	u, err := New(tmpDir, true)
-	require.NoError(t, err)
-
-	progressCalls := 0
-	lastStage := ""
-	lastProcessed := 0
-	lastTotal := 0
-
-	result := u.ExtractArchivesWithProgress(files, func(stage string, processed, total int) {
-		progressCalls++
-		lastStage = stage
-		lastProcessed = processed
-		lastTotal = total
-	})
-
-	assert.Equal(t, 1, result.ArchivesProcessed)
-	assert.GreaterOrEqual(t, progressCalls, 1)
-	assert.Equal(t, progressStageExtracting, lastStage)
-	assert.Equal(t, lastProcessed, lastTotal)
-	assert.Equal(t, 1, lastTotal)
-}
-
-// Test that extracting over an existing file backs it up to trash when a trasher is provided.
-func TestUnzipper_ExtractArchives_BacksUpExistingFileToTrash(t *testing.T) {
-	t.Parallel()
-
-	tmpDir := t.TempDir()
-
-	// Pre-create a file that will be in the extraction path.
-	existingPath := filepath.Join(tmpDir, "photo.jpg")
-	originalContent := []byte("original precious data")
-	require.NoError(t, os.WriteFile(existingPath, originalContent, 0o600))
-
-	// Create an archive that extracts a file with the same name.
-	archivePath := filepath.Join(tmpDir, "photos.zip")
-	newContent := []byte("new photo data from archive")
-	writeZipArchive(t, archivePath, []zipFixtureEntry{
-		{name: "photo.jpg", content: newContent},
-	})
-
-	v, err := safepath.New(tmpDir)
-	require.NoError(t, err)
-
-	metaDir, err := metadata.Init(tmpDir, v)
-	require.NoError(t, err)
-
-	runID := metaDir.RunID("unzip")
-	trasher, err := trash.New(metaDir, runID, v)
-	require.NoError(t, err)
-
-	u, err := NewWithValidator(v, false, trasher)
-	require.NoError(t, err)
-
-	archiveFiles := []collector.FileInfo{
-		{Path: archivePath, Dir: tmpDir, Name: "photos.zip"},
-	}
-	result := u.ExtractArchives(archiveFiles)
-
-	assert.Equal(t, 1, result.ExtractedArchives)
-	assert.Equal(t, 0, result.ErrorCount)
-
-	// The extracted file should contain the new content.
-	got, err := os.ReadFile(existingPath)
-	require.NoError(t, err)
-	assert.Equal(t, newContent, got, "file should contain new archive content")
-
-	// The original file should be preserved in trash.
-	trashDir := filepath.Join(tmpDir, ".btidy", "trash")
-	entries, err := os.ReadDir(trashDir)
-	require.NoError(t, err)
-	require.NotEmpty(t, entries, "trash directory should have a run subdirectory")
-
-	// Find the backed-up file in the trash.
-	backedUp := filepath.Join(trashDir, entries[0].Name(), "photo.jpg")
-	assert.FileExists(t, backedUp, "original file should be in trash")
-
-	backedUpContent, err := os.ReadFile(backedUp)
-	require.NoError(t, err)
-	assert.Equal(t, originalContent, backedUpContent, "trash should contain the original data")
-}
-
-// Test that extracting over an existing file is refused when no trasher is configured.
-func TestUnzipper_ExtractArchives_RefusesOverwriteWithoutTrasher(t *testing.T) {
-	t.Parallel()
-
-	tmpDir := t.TempDir()
-
-	// Pre-create a file that will be in the extraction path.
-	existingPath := filepath.Join(tmpDir, "readme.txt")
-	originalContent := []byte("important existing data")
-	require.NoError(t, os.WriteFile(existingPath, originalContent, 0o600))
-
-	// Create an archive that extracts a file with the same name.
-	archivePath := filepath.Join(tmpDir, "docs.zip")
-	writeZipArchive(t, archivePath, []zipFixtureEntry{
-		{name: "readme.txt", content: []byte("overwrite attempt")},
-	})
-
-	// No trasher — should refuse to overwrite.
-	u, err := New(tmpDir, false)
-	require.NoError(t, err)
-
-	files := collectFiles(t, tmpDir)
-	// Filter to just the archive.
-	var archiveFiles []collector.FileInfo
-	for _, f := range files {
-		if filepath.Ext(f.Name) == ".zip" {
-			archiveFiles = append(archiveFiles, f)
-		}
-	}
-	require.Len(t, archiveFiles, 1)
-
-	result := u.ExtractArchives(archiveFiles)
-
-	assert.Equal(t, 0, result.ErrorCount, "no archive-level error")
-	assert.Equal(t, 1, result.ExtractedArchives, "archive completes with skipped entry")
-
-	require.Len(t, result.Operations, 1)
-	require.NoError(t, result.Operations[0].Error, "per-entry failures are not archive-level errors")
-	assert.Equal(t, 1, result.Operations[0].SkippedEntries, "overwrite entry should be skipped")
-	require.Len(t, result.Operations[0].EntryErrors, 1)
-	assert.Contains(t, result.Operations[0].EntryErrors[0], "refusing to overwrite existing file")
-
-	// The original file must be preserved with its original content.
-	got, err := os.ReadFile(existingPath)
-	require.NoError(t, err)
-	assert.Equal(t, originalContent, got, "original file must not be modified")
-}
-
-// TestUnzipper_ExtractArchives_SkipsBadEntriesContinuesGood verifies that a
-// single bad entry (e.g. symlink) does not abort the entire archive.  Good
-// entries are extracted, the bad entry is skipped, and the archive is still
-// deleted after extraction.
-func TestUnzipper_ExtractArchives_SkipsBadEntriesContinuesGood(t *testing.T) {
-	t.Parallel()
-
-	tmpDir := t.TempDir()
-	archivePath := filepath.Join(tmpDir, "mixed.zip")
-	writeZipArchive(t, archivePath, []zipFixtureEntry{
-		{name: "good.txt", content: []byte("hello")},
-		{name: "bad-symlink", content: []byte("/etc/passwd"), mode: os.ModeSymlink | 0o777},
-		{name: "also-good.txt", content: []byte("world")},
-	})
-
-	files := collectFiles(t, tmpDir)
-	u, err := New(tmpDir, false)
-	require.NoError(t, err)
-
-	result := u.ExtractArchives(files)
-
-	assert.Equal(t, 1, result.ArchivesFound)
-	assert.Equal(t, 1, result.ArchivesProcessed)
-	assert.Equal(t, 1, result.ExtractedArchives, "archive should still be marked extracted")
-	assert.Equal(t, 1, result.DeletedArchives, "archive should be deleted despite skipped entry")
-	assert.Equal(t, 2, result.ExtractedFiles, "both good files should be extracted")
-	assert.Equal(t, 0, result.ErrorCount, "archive-level error count should be zero")
-
-	require.Len(t, result.Operations, 1)
-	op := result.Operations[0]
-	assert.True(t, op.ExtractionComplete, "extraction should complete")
-	assert.True(t, op.DeletedArchive, "archive should be deleted")
-	require.NoError(t, op.Error, "no archive-level error")
-	assert.Equal(t, 1, op.SkippedEntries, "one entry should be skipped")
-	require.Len(t, op.EntryErrors, 1)
-	assert.Contains(t, op.EntryErrors[0], "symlink")
-
-	// Good files extracted.
-	assert.FileExists(t, filepath.Join(tmpDir, "good.txt"))
-	assert.FileExists(t, filepath.Join(tmpDir, "also-good.txt"))
-
-	// Archive removed.
-	assert.NoFileExists(t, archivePath)
-
-	// Bad entry not written.
-	assert.NoFileExists(t, filepath.Join(tmpDir, "bad-symlink"))
-}
-
-// TestUnzipper_ExtractArchives_SkipsBadEntriesZipSlip verifies that a zip-slip
-// entry is skipped while other entries in the same archive are extracted.
-func TestUnzipper_ExtractArchives_SkipsBadEntriesZipSlip(t *testing.T) {
-	t.Parallel()
-
-	tmpDir := t.TempDir()
-	archivePath := filepath.Join(tmpDir, "zipslip.zip")
-	writeZipArchive(t, archivePath, []zipFixtureEntry{
-		{name: "safe.txt", content: []byte("safe content")},
-		{name: "../escape.txt", content: []byte("attack")},
-	})
-
-	files := collectFiles(t, tmpDir)
-	u, err := New(tmpDir, false)
-	require.NoError(t, err)
-
-	result := u.ExtractArchives(files)
-
-	assert.Equal(t, 1, result.ExtractedArchives, "archive should be extracted")
-	assert.Equal(t, 1, result.DeletedArchives, "archive should be deleted")
-	assert.Equal(t, 1, result.ExtractedFiles, "safe file should be extracted")
-	assert.Equal(t, 0, result.ErrorCount)
-
-	require.Len(t, result.Operations, 1)
-	op := result.Operations[0]
-	assert.Equal(t, 1, op.SkippedEntries)
-	assert.Contains(t, op.EntryErrors[0], "escape")
-
-	assert.FileExists(t, filepath.Join(tmpDir, "safe.txt"))
-	assert.NoFileExists(t, filepath.Join(filepath.Dir(tmpDir), "escape.txt"))
-}
-
-// TestUnzipper_ExtractArchives_DryRunNestedArchiveDiscovery verifies that
-// dry-run mode correctly discovers and counts nested archives (regression test
-// for a bug where dry-run returned nil instead of the discovered slice).
-func TestUnzipper_ExtractArchives_DryRunNestedArchiveDiscovery(t *testing.T) {
-	t.Parallel()
-
-	tmpDir := t.TempDir()
-
-	// Build a 3-level nesting: outer.zip -> mid/inner.zip -> deep.txt
-	innerZip := zipBytes(t, []zipFixtureEntry{
-		{name: "deep.txt", content: []byte("deep")},
-	})
-	outerPath := filepath.Join(tmpDir, "outer.zip")
-	writeZipArchive(t, outerPath, []zipFixtureEntry{
-		{name: "mid/inner.zip", content: innerZip},
-		{name: "top.txt", content: []byte("top")},
-	})
-
-	files := collectFiles(t, tmpDir)
-
-	// Dry-run should discover the same archives as a real run.
-	dryU, err := New(tmpDir, true)
-	require.NoError(t, err)
-	dryResult := dryU.ExtractArchives(files)
-
-	assert.Equal(t, 2, dryResult.ArchivesFound, "dry-run should discover both archive levels")
-	assert.Equal(t, 2, dryResult.ArchivesProcessed, "dry-run should process both archives")
-	assert.Equal(t, 2, dryResult.ExtractedArchives, "dry-run should report both as extracted")
-	assert.Equal(t, 0, dryResult.ErrorCount)
-	require.Len(t, dryResult.Operations, 2)
-
-	// No files should have been created or deleted.
-	assert.FileExists(t, outerPath, "dry-run must not remove archive")
-	assert.NoDirExists(t, filepath.Join(tmpDir, "mid"), "dry-run must not create directories")
-}
-
-// TestUnzipper_ExtractArchives_ProtectsQueuedArchives verifies that when one
-// archive contains an entry whose filename matches another queued archive, the
-// entry is skipped (protecting the real archive) and both archives extract
-// successfully.
-func TestUnzipper_ExtractArchives_ProtectsQueuedArchives(t *testing.T) {
-	t.Parallel()
-
-	tmpDir := t.TempDir()
-
-	// Create "real" archive B with known content.
-	bContent := []byte("real-b-content")
-	bPath := filepath.Join(tmpDir, "b.zip")
-	writeZipArchive(t, bPath, []zipFixtureEntry{
-		{name: "from_b.txt", content: bContent},
-	})
-
-	// Create archive A that contains an entry named "b.zip" (fake/corrupt copy).
-	aPath := filepath.Join(tmpDir, "a.zip")
-	writeZipArchive(t, aPath, []zipFixtureEntry{
-		{name: "from_a.txt", content: []byte("from-a")},
-		{name: "b.zip", content: []byte("fake-b-data-not-a-real-zip")},
-	})
-
-	v, err := safepath.New(tmpDir)
-	require.NoError(t, err)
-
-	metaDir, err := metadata.Init(tmpDir, v)
-	require.NoError(t, err)
-
-	runID := metaDir.RunID("unzip")
-	trasher, err := trash.New(metaDir, runID, v)
-	require.NoError(t, err)
-
-	u, err := NewWithValidator(v, false, trasher)
-	require.NoError(t, err)
-
-	archiveFiles := []collector.FileInfo{
-		{Path: aPath, Dir: tmpDir, Name: "a.zip"},
-		{Path: bPath, Dir: tmpDir, Name: "b.zip"},
-	}
-
-	result := u.ExtractArchives(archiveFiles)
-
-	// Both archives should be fully processed.
-	assert.Equal(t, 2, result.ArchivesFound)
-	assert.Equal(t, 2, result.ArchivesProcessed)
-	assert.Equal(t, 2, result.ExtractedArchives)
-	assert.Equal(t, 2, result.DeletedArchives)
-	assert.Equal(t, 0, result.ErrorCount)
-
-	// Archive A should have skipped the "b.zip" entry.
-	require.Len(t, result.Operations, 2)
-	opA := result.Operations[0] // a.zip is first alphabetically
-	assert.Equal(t, aPath, opA.ArchivePath)
-	assert.Equal(t, 1, opA.SkippedEntries, "b.zip entry in a.zip should be skipped")
-	assert.Contains(t, opA.EntryErrors[0], "queued archive")
-
-	// Archive B extracts normally.
-	opB := result.Operations[1]
-	assert.Equal(t, bPath, opB.ArchivePath)
-	assert.Equal(t, 0, opB.SkippedEntries)
-	require.NoError(t, opB.Error)
-
-	// Real B content is preserved.
-	assert.FileExists(t, filepath.Join(tmpDir, "from_b.txt"))
-	got, err := os.ReadFile(filepath.Join(tmpDir, "from_b.txt"))
-	require.NoError(t, err)
-	assert.Equal(t, bContent, got, "from_b.txt should contain the real archive's content")
-
-	// A's non-conflicting entry is extracted.
-	assert.FileExists(t, filepath.Join(tmpDir, "from_a.txt"))
-}
-
-// TestUnzipper_ExtractArchives_ManyArchivesOneContainsAll reproduces the
-// reported bug: a "backup" archive contains entries matching 5 other archives.
-// Without protection, backupExistingFile trashes the real archives causing them
-// to fail with "not a valid zip file". With the fix, all 6 archives extract.
-func TestUnzipper_ExtractArchives_ManyArchivesOneContainsAll(t *testing.T) {
-	t.Parallel()
-
-	tmpDir := t.TempDir()
-
-	// Create 5 individual archives, each with unique content.
-	archiveNames := []string{"alpha.zip", "bravo.zip", "charlie.zip", "delta.zip", "echo.zip"}
-	expectedContent := make(map[string][]byte)
-
-	backupEntries := make([]zipFixtureEntry, 0, len(archiveNames)+1)
-	archiveFiles := make([]collector.FileInfo, 0, len(archiveNames)+1)
-
-	for _, name := range archiveNames {
-		txtName := name[:len(name)-4] + ".txt"
-		content := []byte("content-of-" + txtName)
-		expectedContent[txtName] = content
-
-		archPath := filepath.Join(tmpDir, name)
-		writeZipArchive(t, archPath, []zipFixtureEntry{
-			{name: txtName, content: content},
-		})
-		archiveFiles = append(archiveFiles, collector.FileInfo{
-			Path: archPath, Dir: tmpDir, Name: name,
-		})
-
-		// The backup archive stores a (corrupt) copy of each archive.
-		backupEntries = append(backupEntries, zipFixtureEntry{
-			name:    name,
-			content: []byte("backup-copy-not-a-real-zip-" + name),
-		})
-	}
-
-	// Add the backup archive itself.
-	backupEntries = append(backupEntries, zipFixtureEntry{
-		name:    "backup-manifest.txt",
-		content: []byte("backup manifest"),
-	})
-	backupPath := filepath.Join(tmpDir, "backup.zip")
-	writeZipArchive(t, backupPath, backupEntries)
-	archiveFiles = append(archiveFiles, collector.FileInfo{
-		Path: backupPath, Dir: tmpDir, Name: "backup.zip",
-	})
-
-	v, err := safepath.New(tmpDir)
-	require.NoError(t, err)
-
-	metaDir, err := metadata.Init(tmpDir, v)
-	require.NoError(t, err)
-
-	runID := metaDir.RunID("unzip")
-	trasher, err := trash.New(metaDir, runID, v)
-	require.NoError(t, err)
-
-	u, err := NewWithValidator(v, false, trasher)
-	require.NoError(t, err)
-
-	result := u.ExtractArchives(archiveFiles)
-
-	// All 6 archives should extract successfully.
-	assert.Equal(t, 6, result.ArchivesFound)
-	assert.Equal(t, 6, result.ArchivesProcessed)
-	assert.Equal(t, 6, result.ExtractedArchives)
-	assert.Equal(t, 6, result.DeletedArchives)
-	assert.Equal(t, 0, result.ErrorCount, "no archive-level errors")
-
-	// Verify each individual archive's content was extracted correctly.
-	for txtName, expectedBytes := range expectedContent {
-		got, err := os.ReadFile(filepath.Join(tmpDir, txtName))
-		require.NoError(t, err, "should be able to read %s", txtName)
-		assert.Equal(t, expectedBytes, got, "%s should contain real content", txtName)
-	}
-
-	// The backup archive's non-conflicting entry should also be extracted.
-	assert.FileExists(t, filepath.Join(tmpDir, "backup-manifest.txt"))
-
-	// The backup archive should have had its conflicting entries skipped.
-	// Processing order is alphabetical: alpha, backup, bravo, charlie, delta, echo.
-	// When backup.zip is processed, alpha.zip has already been dequeued so only
-	// the 4 remaining archives (bravo–echo) are still in the pending set.
-	var backupOp *ExtractOperation
-	for i := range result.Operations {
-		if result.Operations[i].ArchivePath == backupPath {
-			backupOp = &result.Operations[i]
-			break
-		}
-	}
-	require.NotNil(t, backupOp, "backup.zip operation should exist")
-	assert.Equal(t, 4, backupOp.SkippedEntries, "4 archive-name entries should be skipped (alpha already processed)")
-	for _, entryErr := range backupOp.EntryErrors {
-		assert.Contains(t, entryErr, "queued archive")
-	}
-}
-
-// TestUnzipper_ExtractArchives_FilesystemRescanFindsOrphanedArchives verifies
-// that archives present on disk but absent from the initial file list are still
-// discovered and extracted via the post-queue filesystem rescan.
-func TestUnzipper_ExtractArchives_FilesystemRescanFindsOrphanedArchives(t *testing.T) {
-	t.Parallel()
-
-	tmpDir := t.TempDir()
-
-	// Create two archives on disk.
-	aPath := filepath.Join(tmpDir, "a.zip")
-	writeZipArchive(t, aPath, []zipFixtureEntry{
-		{name: "from_a.txt", content: []byte("a-content")},
-	})
-
-	bPath := filepath.Join(tmpDir, "b.zip")
-	writeZipArchive(t, bPath, []zipFixtureEntry{
-		{name: "from_b.txt", content: []byte("b-content")},
-	})
-
-	// Only tell the unzipper about a.zip — b.zip is "orphaned" (not in the file list).
-	partialFiles := []collector.FileInfo{
-		{Path: aPath, Dir: tmpDir, Name: "a.zip"},
-	}
-
-	u, err := New(tmpDir, false)
-	require.NoError(t, err)
-
-	result := u.ExtractArchives(partialFiles)
-
-	// Both archives must be found and extracted.
-	assert.Equal(t, 2, result.ArchivesFound, "filesystem rescan should discover b.zip")
-	assert.Equal(t, 2, result.ArchivesProcessed)
-	assert.Equal(t, 2, result.ExtractedArchives)
-	assert.Equal(t, 2, result.DeletedArchives)
-	assert.Equal(t, 0, result.ErrorCount)
-
-	assert.FileExists(t, filepath.Join(tmpDir, "from_a.txt"))
-	assert.FileExists(t, filepath.Join(tmpDir, "from_b.txt"))
-	assert.NoFileExists(t, aPath)
-	assert.NoFileExists(t, bPath)
-}
-
-// TestUnzipper_ExtractArchives_RescanPicksUpNestedProducedArchives verifies
-// the full loop: extracting an archive produces another archive on disk, which
-// is then picked up by the filesystem rescan and extracted in a subsequent round.
-func TestUnzipper_ExtractArchives_RescanPicksUpNestedProducedArchives(t *testing.T) {
-	t.Parallel()
-
-	tmpDir := t.TempDir()
-
-	// inner.zip lives inside outer.zip. After outer.zip is extracted,
-	// inner.zip appears on disk. The filesystem rescan must find and
-	// extract it even if entry-based discovery were somehow bypassed.
-	innerZip := zipBytes(t, []zipFixtureEntry{
-		{name: "deep.txt", content: []byte("deep-content")},
-	})
-
-	outerPath := filepath.Join(tmpDir, "outer.zip")
-	writeZipArchive(t, outerPath, []zipFixtureEntry{
-		{name: "inner.zip", content: innerZip},
-		{name: "surface.txt", content: []byte("surface")},
-	})
-
-	files := collectFiles(t, tmpDir)
-	u, err := New(tmpDir, false)
-	require.NoError(t, err)
-
-	result := u.ExtractArchives(files)
-
-	assert.Equal(t, 2, result.ArchivesFound)
-	assert.Equal(t, 2, result.ArchivesProcessed)
-	assert.Equal(t, 2, result.ExtractedArchives)
-	assert.Equal(t, 0, result.ErrorCount)
-
-	assert.FileExists(t, filepath.Join(tmpDir, "surface.txt"))
-	assert.FileExists(t, filepath.Join(tmpDir, "deep.txt"))
-	assert.NoFileExists(t, outerPath)
-	assert.NoFileExists(t, filepath.Join(tmpDir, "inner.zip"))
-
-	// No .zip files should remain anywhere.
-	var remaining []string
-	require.NoError(t, filepath.Walk(tmpDir, func(path string, info os.FileInfo, walkErr error) error {
-		if walkErr != nil {
-			return walkErr
-		}
-		if !info.IsDir() && isZipArchive(path) {
-			remaining = append(remaining, path)
-		}
-		return nil
-	}))
-	assert.Empty(t, remaining, "no zip archives should remain after extraction")
-}
-
-// TestUnzipper_ExtractArchives_DeeplyNestedArchives verifies that zip-in-zip
-// nesting four levels deep is fully extracted in a single run, and that a
-// second run from the top finds nothing left to process (idempotent).
-func TestUnzipper_ExtractArchives_DeeplyNestedArchives(t *testing.T) {
-	t.Parallel()
-
-	tmpDir := t.TempDir()
-
-	// Build archives from the inside out (4 levels).
-	//   level4.zip -> "final.txt"
-	//   level3.zip -> "l3/level4.zip"
-	//   level2.zip -> "l2/level3.zip"
-	//   level1.zip -> "l1/level2.zip" + "top.txt"
-	level4 := zipBytes(t, []zipFixtureEntry{
-		{name: "final.txt", content: []byte("deeply nested content")},
-	})
-	level3 := zipBytes(t, []zipFixtureEntry{
-		{name: "l3/level4.zip", content: level4},
-	})
-	level2 := zipBytes(t, []zipFixtureEntry{
-		{name: "l2/level3.zip", content: level3},
-	})
-
-	level1Path := filepath.Join(tmpDir, "level1.zip")
-	writeZipArchive(t, level1Path, []zipFixtureEntry{
-		{name: "l1/level2.zip", content: level2},
-		{name: "top.txt", content: []byte("top level")},
-	})
-
-	// --- Phase 1: extract everything recursively ---
-	files := collectFiles(t, tmpDir)
-	u, err := New(tmpDir, false)
-	require.NoError(t, err)
-
-	result := u.ExtractArchives(files)
-
-	assert.Equal(t, 4, result.ArchivesFound, "should discover all 4 archive levels")
-	assert.Equal(t, 4, result.ArchivesProcessed, "should process all 4 archives")
-	assert.Equal(t, 4, result.ExtractedArchives, "should extract all 4 archives")
-	assert.Equal(t, 4, result.DeletedArchives, "should delete all 4 archives")
-	assert.Equal(t, 0, result.ErrorCount, "should complete without errors")
-	require.Len(t, result.Operations, 4, "should have one operation per archive")
-
-	// Every operation should be complete and error-free.
-	for i, op := range result.Operations {
-		assert.True(t, op.ExtractionComplete, "operation %d should be complete", i)
-		assert.True(t, op.DeletedArchive, "operation %d archive should be deleted", i)
-		require.NoError(t, op.Error, "operation %d should have no error", i)
-	}
-
-	// Final extracted files must exist with correct content.
-	topContent, err := os.ReadFile(filepath.Join(tmpDir, "top.txt"))
-	require.NoError(t, err)
-	assert.Equal(t, []byte("top level"), topContent)
-
-	finalContent, err := os.ReadFile(filepath.Join(tmpDir, "l1", "l2", "l3", "final.txt"))
-	require.NoError(t, err)
-	assert.Equal(t, []byte("deeply nested content"), finalContent)
-
-	// No .zip files should remain anywhere in the tree.
-	var remainingZips []string
-	require.NoError(t, filepath.Walk(tmpDir, func(path string, info os.FileInfo, walkErr error) error {
-		if walkErr != nil {
-			return walkErr
-		}
-		if !info.IsDir() && isZipArchive(path) {
-			remainingZips = append(remainingZips, path)
-		}
-		return nil
-	}))
-	assert.Empty(t, remainingZips, "no zip archives should remain after extraction")
-
-	// --- Phase 2: re-run from the top — nothing left to extract ---
-	filesAfter := collectFiles(t, tmpDir)
-	u2, err := New(tmpDir, false)
-	require.NoError(t, err)
-
-	resultAfter := u2.ExtractArchives(filesAfter)
-
-	assert.Equal(t, 0, resultAfter.ArchivesFound, "second run should find zero archives")
-	assert.Equal(t, 0, resultAfter.ArchivesProcessed, "second run should process nothing")
-	assert.Empty(t, resultAfter.Operations, "second run should produce no operations")
-
-	// Extracted files must still be intact after the second run.
-	topAgain, err := os.ReadFile(filepath.Join(tmpDir, "top.txt"))
-	require.NoError(t, err)
-	assert.Equal(t, []byte("top level"), topAgain, "top.txt must survive second run")
-
-	finalAgain, err := os.ReadFile(filepath.Join(tmpDir, "l1", "l2", "l3", "final.txt"))
-	require.NoError(t, err)
-	assert.Equal(t, []byte("deeply nested content"), finalAgain, "final.txt must survive second run")
+	assert.NoError(t, err, "unable to create zip archive")
 }

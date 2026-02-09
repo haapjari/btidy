@@ -1,4 +1,4 @@
-.PHONY: all build test test-race test-cover test-e2e clean lint fmt vet vulncheck check verify pre-commit tools help release release-build
+.PHONY: all build test test-race test-cover test-e2e clean lint fmt vet vulncheck check verify pre-commit tools help release release-build docs docs-d2 docs-deps
 
 # ============================================================================
 # VARIABLES
@@ -17,11 +17,13 @@ GOLANGCI_LINT := $(TOOLS_DIR)/golangci-lint
 GOTESTSUM := $(TOOLS_DIR)/gotestsum
 GOIMPORTS := $(TOOLS_DIR)/goimports
 GOVULNCHECK := $(TOOLS_DIR)/govulncheck
+D2 := $(TOOLS_DIR)/d2
 
 GOLANGCI_LINT_VERSION := v2.8.0
 GOTESTSUM_VERSION := latest
 GOIMPORTS_VERSION := latest
 GOVULNCHECK_VERSION := v1.1.4
+D2_VERSION := v0.7.1
 
 CMD_DIR := ./cmd
 PKG_DIR := ./pkg/...
@@ -64,6 +66,9 @@ help:
 	@echo "  verify        - Alias for check"
 	@echo "  pre-commit    - Run fmt, lint, test-race (required before commit)"
 	@echo "  tools         - Install development tools to .tools/"
+	@echo "  docs          - Render D2 diagrams and dependency graph to docs/*.svg"
+	@echo "  docs-d2       - Render D2 diagrams only (requires d2, install via make tools)"
+	@echo "  docs-deps     - Render auto-generated dependency graph only (requires graphviz: apt install graphviz)"
 	@echo "  clean         - Clean build artifacts and tools"
 	@echo "  release       - Tag, push, and create GitHub release with binaries"
 	@echo "  release-build - Cross-compile release binaries to dist/"
@@ -139,7 +144,7 @@ pre-commit: fmt lint test-race
 # TOOLS
 # ============================================================================
 
-tools: $(GOLANGCI_LINT) $(GOTESTSUM) $(GOIMPORTS) $(GOVULNCHECK)
+tools: $(GOLANGCI_LINT) $(GOTESTSUM) $(GOIMPORTS) $(GOVULNCHECK) $(D2)
 
 $(TOOLS_DIR):
 	@mkdir -p $(TOOLS_DIR)
@@ -159,6 +164,29 @@ $(GOIMPORTS): | $(TOOLS_DIR)
 $(GOVULNCHECK): | $(TOOLS_DIR)
 	@echo "Installing govulncheck $(GOVULNCHECK_VERSION)..."
 	@GOBIN=$(TOOLS_DIR) $(GO) install golang.org/x/vuln/cmd/govulncheck@$(GOVULNCHECK_VERSION)
+
+$(D2): | $(TOOLS_DIR)
+	@echo "Installing d2 $(D2_VERSION)..."
+	@GOBIN=$(TOOLS_DIR) $(GO) install oss.terrastruct.com/d2@$(D2_VERSION)
+
+# ============================================================================
+# DOCS
+# ============================================================================
+
+D2_FILES := $(wildcard docs/*.d2)
+D2_SVGS := $(D2_FILES:.d2=.svg)
+
+docs: docs-d2 docs-deps ## Render D2 diagrams and dependency graph to docs/*.svg
+
+docs-d2: $(D2) $(D2_SVGS) ## Render D2 diagrams only
+
+docs/%.svg: docs/%.d2 $(D2)
+	@echo "Rendering $<..."
+	$(D2) $< $@
+
+docs-deps: ## Render auto-generated dependency graph only
+	@echo "Generating dependency graph..."
+	@scripts/depgraph.sh docs/deps.svg
 
 # ============================================================================
 # CLEAN
