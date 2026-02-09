@@ -13,6 +13,7 @@ import (
 	"strings"
 
 	"btidy/pkg/collector"
+	"btidy/pkg/metadata"
 	"btidy/pkg/progress"
 	"btidy/pkg/safepath"
 	"btidy/pkg/trash"
@@ -96,6 +97,11 @@ func (u *Unzipper) ExtractArchives(files []collector.FileInfo) Result {
 }
 
 // ExtractArchivesWithProgress extracts archives recursively and emits progress.
+//
+// After processing all archives from the initial file list (and any nested
+// archives discovered inside them), it rescans the root directory for .zip
+// files that may have been missed.  This loop repeats until the filesystem
+// contains no unprocessed archives.
 func (u *Unzipper) ExtractArchivesWithProgress(files []collector.FileInfo, onProgress func(stage string, processed, total int)) Result {
 	result := Result{
 		TotalFiles: len(files),
@@ -109,6 +115,24 @@ func (u *Unzipper) ExtractArchivesWithProgress(files []collector.FileInfo, onPro
 
 	result.ArchivesFound = len(queue)
 	processed := make(map[string]bool, len(queue))
+
+	for {
+		u.drainQueue(queue, processed, &result, onProgress)
+
+		// Rescan the filesystem for archives the entry-based discovery missed.
+		queue = u.discoverArchivesOnDisk(processed)
+		if len(queue) == 0 {
+			break
+		}
+		result.ArchivesFound += len(queue)
+	}
+
+	return result
+}
+
+// drainQueue processes every archive in queue (and any nested archives
+// discovered from zip entries) until the queue is empty.
+func (u *Unzipper) drainQueue(queue []string, processed map[string]bool, result *Result, onProgress func(stage string, processed, total int)) {
 	queued := make(map[string]bool, len(queue))
 	for _, archivePath := range queue {
 		queued[archivePath] = true
@@ -143,8 +167,6 @@ func (u *Unzipper) ExtractArchivesWithProgress(files []collector.FileInfo, onPro
 
 		progress.EmitStage(onProgress, progressStageExtracting, len(result.Operations), len(result.Operations)+len(queue))
 	}
-
-	return result
 }
 
 func (u *Unzipper) processArchive(archivePath string, pendingArchives map[string]bool) (operation ExtractOperation, discovered []string) {
@@ -463,6 +485,38 @@ func collectInitialArchives(files []collector.FileInfo) []string {
 
 		archives = append(archives, file.Path)
 	}
+
+	sort.Strings(archives)
+	return archives
+}
+
+// discoverArchivesOnDisk walks the root directory and returns paths to .zip
+// files that have not already been processed. The .btidy metadata directory
+// is always skipped. Walk errors are silently ignored so that inaccessible
+// subtrees do not prevent discovery of reachable archives.
+func (u *Unzipper) discoverArchivesOnDisk(processed map[string]bool) []string {
+	var archives []string
+	root := u.validator.Root()
+
+	//nolint:errcheck // best-effort scan; inaccessible paths are skipped
+	filepath.Walk(root, func(path string, info os.FileInfo, err error) error {
+		if err != nil {
+			return filepath.SkipDir
+		}
+		if info.IsDir() {
+			if info.Name() == metadata.DirName {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		if !info.Mode().IsRegular() {
+			return nil
+		}
+		if isZipArchive(path) && !processed[path] {
+			archives = append(archives, path)
+		}
+		return nil
+	})
 
 	sort.Strings(archives)
 	return archives

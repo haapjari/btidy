@@ -433,6 +433,66 @@ func TestEndToEndUnzip_DryRunAndApplyRecursive(t *testing.T) {
 	assertExists(t, filepath.Join(root, "nested", "deep", "final.txt"))
 }
 
+// TestEndToEndUnzip_DeeplyNestedArchivesFourLevels verifies that the unzip
+// command fully extracts archives nested 4 levels deep and leaves no .zip
+// files behind. Each level contains at least one regular file alongside the
+// nested archive to confirm all content is extracted.
+func TestEndToEndUnzip_DeeplyNestedArchivesFourLevels(t *testing.T) {
+	binPath := binaryPath(t)
+	root := t.TempDir()
+
+	// Build from the inside out:
+	//   level4.zip → "l4/report.txt"
+	//   level3.zip → "l3/level4.zip" + "l3/notes.txt"
+	//   level2.zip → "l2/level3.zip" + "l2/readme.txt"
+	//   level1.zip → "l1/level2.zip" + "l1/cover.txt"
+	level4 := zipBytes(t, []zipFixtureEntry{
+		{name: "l4/report.txt", content: []byte("final report")},
+	})
+	level3 := zipBytes(t, []zipFixtureEntry{
+		{name: "l3/level4.zip", content: level4},
+		{name: "l3/notes.txt", content: []byte("level 3 notes")},
+	})
+	level2 := zipBytes(t, []zipFixtureEntry{
+		{name: "l2/level3.zip", content: level3},
+		{name: "l2/readme.txt", content: []byte("level 2 readme")},
+	})
+	level1Path := filepath.Join(root, "level1.zip")
+	writeZipArchive(t, level1Path, []zipFixtureEntry{
+		{name: "l1/level2.zip", content: level2},
+		{name: "l1/cover.txt", content: []byte("level 1 cover")},
+	})
+
+	result := runBinary(t, binPath, "unzip", root)
+	assertCommandSucceeded(t, "unzip 4-level nested", result)
+
+	// All content files must be extracted.
+	assertExists(t, filepath.Join(root, "l1", "cover.txt"))
+	assertExists(t, filepath.Join(root, "l1", "l2", "readme.txt"))
+	assertExists(t, filepath.Join(root, "l1", "l2", "l3", "notes.txt"))
+	assertExists(t, filepath.Join(root, "l1", "l2", "l3", "l4", "report.txt"))
+
+	// No .zip files should remain anywhere in the tree.
+	var remaining []string
+	if err := filepath.Walk(root, func(path string, info os.FileInfo, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		if info.IsDir() && info.Name() == ".btidy" {
+			return filepath.SkipDir
+		}
+		if !info.IsDir() && strings.EqualFold(filepath.Ext(path), ".zip") {
+			remaining = append(remaining, path)
+		}
+		return nil
+	}); err != nil {
+		t.Fatalf("walk failed: %v", err)
+	}
+	if len(remaining) > 0 {
+		t.Fatalf("expected no leftover .zip files, found: %v", remaining)
+	}
+}
+
 func TestEndToEndUnzip_ZipSlipBlocked(t *testing.T) {
 	binPath := binaryPath(t)
 	workspace := t.TempDir()

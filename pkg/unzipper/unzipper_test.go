@@ -773,6 +773,99 @@ func TestUnzipper_ExtractArchives_ManyArchivesOneContainsAll(t *testing.T) {
 	}
 }
 
+// TestUnzipper_ExtractArchives_FilesystemRescanFindsOrphanedArchives verifies
+// that archives present on disk but absent from the initial file list are still
+// discovered and extracted via the post-queue filesystem rescan.
+func TestUnzipper_ExtractArchives_FilesystemRescanFindsOrphanedArchives(t *testing.T) {
+	t.Parallel()
+
+	tmpDir := t.TempDir()
+
+	// Create two archives on disk.
+	aPath := filepath.Join(tmpDir, "a.zip")
+	writeZipArchive(t, aPath, []zipFixtureEntry{
+		{name: "from_a.txt", content: []byte("a-content")},
+	})
+
+	bPath := filepath.Join(tmpDir, "b.zip")
+	writeZipArchive(t, bPath, []zipFixtureEntry{
+		{name: "from_b.txt", content: []byte("b-content")},
+	})
+
+	// Only tell the unzipper about a.zip — b.zip is "orphaned" (not in the file list).
+	partialFiles := []collector.FileInfo{
+		{Path: aPath, Dir: tmpDir, Name: "a.zip"},
+	}
+
+	u, err := New(tmpDir, false)
+	require.NoError(t, err)
+
+	result := u.ExtractArchives(partialFiles)
+
+	// Both archives must be found and extracted.
+	assert.Equal(t, 2, result.ArchivesFound, "filesystem rescan should discover b.zip")
+	assert.Equal(t, 2, result.ArchivesProcessed)
+	assert.Equal(t, 2, result.ExtractedArchives)
+	assert.Equal(t, 2, result.DeletedArchives)
+	assert.Equal(t, 0, result.ErrorCount)
+
+	assert.FileExists(t, filepath.Join(tmpDir, "from_a.txt"))
+	assert.FileExists(t, filepath.Join(tmpDir, "from_b.txt"))
+	assert.NoFileExists(t, aPath)
+	assert.NoFileExists(t, bPath)
+}
+
+// TestUnzipper_ExtractArchives_RescanPicksUpNestedProducedArchives verifies
+// the full loop: extracting an archive produces another archive on disk, which
+// is then picked up by the filesystem rescan and extracted in a subsequent round.
+func TestUnzipper_ExtractArchives_RescanPicksUpNestedProducedArchives(t *testing.T) {
+	t.Parallel()
+
+	tmpDir := t.TempDir()
+
+	// inner.zip lives inside outer.zip. After outer.zip is extracted,
+	// inner.zip appears on disk. The filesystem rescan must find and
+	// extract it even if entry-based discovery were somehow bypassed.
+	innerZip := zipBytes(t, []zipFixtureEntry{
+		{name: "deep.txt", content: []byte("deep-content")},
+	})
+
+	outerPath := filepath.Join(tmpDir, "outer.zip")
+	writeZipArchive(t, outerPath, []zipFixtureEntry{
+		{name: "inner.zip", content: innerZip},
+		{name: "surface.txt", content: []byte("surface")},
+	})
+
+	files := collectFiles(t, tmpDir)
+	u, err := New(tmpDir, false)
+	require.NoError(t, err)
+
+	result := u.ExtractArchives(files)
+
+	assert.Equal(t, 2, result.ArchivesFound)
+	assert.Equal(t, 2, result.ArchivesProcessed)
+	assert.Equal(t, 2, result.ExtractedArchives)
+	assert.Equal(t, 0, result.ErrorCount)
+
+	assert.FileExists(t, filepath.Join(tmpDir, "surface.txt"))
+	assert.FileExists(t, filepath.Join(tmpDir, "deep.txt"))
+	assert.NoFileExists(t, outerPath)
+	assert.NoFileExists(t, filepath.Join(tmpDir, "inner.zip"))
+
+	// No .zip files should remain anywhere.
+	var remaining []string
+	require.NoError(t, filepath.Walk(tmpDir, func(path string, info os.FileInfo, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		if !info.IsDir() && isZipArchive(path) {
+			remaining = append(remaining, path)
+		}
+		return nil
+	}))
+	assert.Empty(t, remaining, "no zip archives should remain after extraction")
+}
+
 // TestUnzipper_ExtractArchives_DeeplyNestedArchives verifies that zip-in-zip
 // nesting four levels deep is fully extracted in a single run, and that a
 // second run from the top finds nothing left to process (idempotent).
