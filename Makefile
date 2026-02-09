@@ -231,23 +231,23 @@ release:
 		echo "updated VERSION to $$VERSION"; \
 	else \
 		echo "using version $$VERSION from VERSION file"; \
-	fi; \
+	fi && \
 	\
-	echo "committing version bump..."; \
-	git add $(VERSION_FILE); \
-	git commit -m "chore: release v$$VERSION" || true; \
+	echo "committing version bump..." && \
+	git add $(VERSION_FILE) && \
+	(git commit -m "chore: release v$$VERSION" || true) && \
 	\
-	echo "creating tag v$$VERSION..."; \
-	git tag -a "v$$VERSION" -m "Release v$$VERSION"; \
+	echo "creating tag v$$VERSION..." && \
+	git tag -a "v$$VERSION" -m "Release v$$VERSION" && \
 	\
-	echo "pushing to origin..."; \
-	git push origin main --tags; \
+	echo "pushing to origin..." && \
+	git push origin main --tags && \
 	\
-	echo "building release binaries..."; \
-	$(MAKE) release-build CURRENT_VERSION=$$VERSION; \
+	echo "building release binaries..." && \
+	$(MAKE) release-build CURRENT_VERSION=$$VERSION && \
 	\
-	echo "creating github release..."; \
-	gh release create "v$$VERSION" $(DIST_DIR)/* --generate-notes --title "v$$VERSION"; \
+	echo "creating github release..." && \
+	gh release create "v$$VERSION" $(DIST_DIR)/* --generate-notes --title "v$$VERSION" && \
 	\
-	echo ""; \
+	echo "" && \
 	echo "release v$$VERSION complete!"
