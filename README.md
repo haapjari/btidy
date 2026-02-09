@@ -2,6 +2,25 @@
 
 Tool to tame messy backup directories, recursively extract archives, deduplicate files by content hash, and organize what's left. Every destructive operation is reversible through soft-delete, journaling, and undo.
 
+## The Problem
+
+Years of backups tend to accumulate into a mess. You back up a folder, then later back up the same folder again — this time the previous backup archive is inside it. Repeat a few times and you end up with something like:
+
+```
+backup-2024/
+  photos-2019.zip
+  documents.zip         <- contains documents-2018.zip inside
+  old-backups.zip       <- contains photos-2019.zip + another old-backups.zip
+    old-backups.zip     <- contains yet another layer
+      old-backups.zip   <- and another...
+        photos-2017.zip
+        notes.zip
+```
+
+Archives within archives within archives, four or five levels deep, full of duplicate files with inconsistent names. Manually untangling this is tedious and error-prone.
+
+btidy solves this in one pipeline: recursively extract every archive (no matter how deeply nested), deduplicate by content hash, normalize filenames, and organize by type. Every step is reversible.
+
 ## Overview
 
 - **Unzip** extracts .zip files recursively in the directory, in place and removes archives on success.
