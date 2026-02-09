@@ -124,7 +124,7 @@ func (u *Unzipper) ExtractArchivesWithProgress(files []collector.FileInfo, onPro
 		}
 		processed[archivePath] = true
 
-		op, discoveredArchives := u.processArchive(archivePath)
+		op, discoveredArchives := u.processArchive(archivePath, queued)
 		result.Operations = append(result.Operations, op)
 		result.accumulateOperation(op)
 
@@ -147,7 +147,7 @@ func (u *Unzipper) ExtractArchivesWithProgress(files []collector.FileInfo, onPro
 	return result
 }
 
-func (u *Unzipper) processArchive(archivePath string) (operation ExtractOperation, discovered []string) {
+func (u *Unzipper) processArchive(archivePath string, pendingArchives map[string]bool) (operation ExtractOperation, discovered []string) {
 	operation = ExtractOperation{ArchivePath: archivePath}
 
 	if !isZipArchive(archivePath) {
@@ -184,7 +184,7 @@ func (u *Unzipper) processArchive(archivePath string) (operation ExtractOperatio
 	skippedNames := make(map[string]bool)
 
 	for _, file := range reader.File {
-		entryOutcome, entryErr := u.extractEntry(archivePath, destinationDir, file)
+		entryOutcome, entryErr := u.extractEntry(archivePath, destinationDir, file, pendingArchives)
 		if entryErr != nil {
 			operation.SkippedEntries++
 			operation.EntryErrors = append(operation.EntryErrors,
@@ -293,7 +293,7 @@ func (u *Unzipper) verifyExtractedFiles(entries []*zip.File, destinationDir stri
 	return nil
 }
 
-func (u *Unzipper) extractEntry(archivePath, destinationDir string, file *zip.File) (entryResult, error) {
+func (u *Unzipper) extractEntry(archivePath, destinationDir string, file *zip.File, pendingArchives map[string]bool) (entryResult, error) {
 	result := entryResult{}
 
 	entryPath, err := u.resolveEntryPath(destinationDir, file.Name)
@@ -303,6 +303,10 @@ func (u *Unzipper) extractEntry(archivePath, destinationDir string, file *zip.Fi
 
 	if entryPath == archivePath {
 		return result, fmt.Errorf("archive entry would overwrite source archive: %s", file.Name)
+	}
+
+	if pendingArchives[entryPath] {
+		return result, fmt.Errorf("entry would overwrite queued archive: %s", file.Name)
 	}
 
 	if err := u.validator.ValidatePathForWrite(entryPath); err != nil {

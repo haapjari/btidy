@@ -603,6 +603,176 @@ func TestUnzipper_ExtractArchives_DryRunNestedArchiveDiscovery(t *testing.T) {
 	assert.NoDirExists(t, filepath.Join(tmpDir, "mid"), "dry-run must not create directories")
 }
 
+// TestUnzipper_ExtractArchives_ProtectsQueuedArchives verifies that when one
+// archive contains an entry whose filename matches another queued archive, the
+// entry is skipped (protecting the real archive) and both archives extract
+// successfully.
+func TestUnzipper_ExtractArchives_ProtectsQueuedArchives(t *testing.T) {
+	t.Parallel()
+
+	tmpDir := t.TempDir()
+
+	// Create "real" archive B with known content.
+	bContent := []byte("real-b-content")
+	bPath := filepath.Join(tmpDir, "b.zip")
+	writeZipArchive(t, bPath, []zipFixtureEntry{
+		{name: "from_b.txt", content: bContent},
+	})
+
+	// Create archive A that contains an entry named "b.zip" (fake/corrupt copy).
+	aPath := filepath.Join(tmpDir, "a.zip")
+	writeZipArchive(t, aPath, []zipFixtureEntry{
+		{name: "from_a.txt", content: []byte("from-a")},
+		{name: "b.zip", content: []byte("fake-b-data-not-a-real-zip")},
+	})
+
+	v, err := safepath.New(tmpDir)
+	require.NoError(t, err)
+
+	metaDir, err := metadata.Init(tmpDir, v)
+	require.NoError(t, err)
+
+	runID := metaDir.RunID("unzip")
+	trasher, err := trash.New(metaDir, runID, v)
+	require.NoError(t, err)
+
+	u, err := NewWithValidator(v, false, trasher)
+	require.NoError(t, err)
+
+	archiveFiles := []collector.FileInfo{
+		{Path: aPath, Dir: tmpDir, Name: "a.zip"},
+		{Path: bPath, Dir: tmpDir, Name: "b.zip"},
+	}
+
+	result := u.ExtractArchives(archiveFiles)
+
+	// Both archives should be fully processed.
+	assert.Equal(t, 2, result.ArchivesFound)
+	assert.Equal(t, 2, result.ArchivesProcessed)
+	assert.Equal(t, 2, result.ExtractedArchives)
+	assert.Equal(t, 2, result.DeletedArchives)
+	assert.Equal(t, 0, result.ErrorCount)
+
+	// Archive A should have skipped the "b.zip" entry.
+	require.Len(t, result.Operations, 2)
+	opA := result.Operations[0] // a.zip is first alphabetically
+	assert.Equal(t, aPath, opA.ArchivePath)
+	assert.Equal(t, 1, opA.SkippedEntries, "b.zip entry in a.zip should be skipped")
+	assert.Contains(t, opA.EntryErrors[0], "queued archive")
+
+	// Archive B extracts normally.
+	opB := result.Operations[1]
+	assert.Equal(t, bPath, opB.ArchivePath)
+	assert.Equal(t, 0, opB.SkippedEntries)
+	require.NoError(t, opB.Error)
+
+	// Real B content is preserved.
+	assert.FileExists(t, filepath.Join(tmpDir, "from_b.txt"))
+	got, err := os.ReadFile(filepath.Join(tmpDir, "from_b.txt"))
+	require.NoError(t, err)
+	assert.Equal(t, bContent, got, "from_b.txt should contain the real archive's content")
+
+	// A's non-conflicting entry is extracted.
+	assert.FileExists(t, filepath.Join(tmpDir, "from_a.txt"))
+}
+
+// TestUnzipper_ExtractArchives_ManyArchivesOneContainsAll reproduces the
+// reported bug: a "backup" archive contains entries matching 5 other archives.
+// Without protection, backupExistingFile trashes the real archives causing them
+// to fail with "not a valid zip file". With the fix, all 6 archives extract.
+func TestUnzipper_ExtractArchives_ManyArchivesOneContainsAll(t *testing.T) {
+	t.Parallel()
+
+	tmpDir := t.TempDir()
+
+	// Create 5 individual archives, each with unique content.
+	archiveNames := []string{"alpha.zip", "bravo.zip", "charlie.zip", "delta.zip", "echo.zip"}
+	expectedContent := make(map[string][]byte)
+
+	backupEntries := make([]zipFixtureEntry, 0, len(archiveNames)+1)
+	archiveFiles := make([]collector.FileInfo, 0, len(archiveNames)+1)
+
+	for _, name := range archiveNames {
+		txtName := name[:len(name)-4] + ".txt"
+		content := []byte("content-of-" + txtName)
+		expectedContent[txtName] = content
+
+		archPath := filepath.Join(tmpDir, name)
+		writeZipArchive(t, archPath, []zipFixtureEntry{
+			{name: txtName, content: content},
+		})
+		archiveFiles = append(archiveFiles, collector.FileInfo{
+			Path: archPath, Dir: tmpDir, Name: name,
+		})
+
+		// The backup archive stores a (corrupt) copy of each archive.
+		backupEntries = append(backupEntries, zipFixtureEntry{
+			name:    name,
+			content: []byte("backup-copy-not-a-real-zip-" + name),
+		})
+	}
+
+	// Add the backup archive itself.
+	backupEntries = append(backupEntries, zipFixtureEntry{
+		name:    "backup-manifest.txt",
+		content: []byte("backup manifest"),
+	})
+	backupPath := filepath.Join(tmpDir, "backup.zip")
+	writeZipArchive(t, backupPath, backupEntries)
+	archiveFiles = append(archiveFiles, collector.FileInfo{
+		Path: backupPath, Dir: tmpDir, Name: "backup.zip",
+	})
+
+	v, err := safepath.New(tmpDir)
+	require.NoError(t, err)
+
+	metaDir, err := metadata.Init(tmpDir, v)
+	require.NoError(t, err)
+
+	runID := metaDir.RunID("unzip")
+	trasher, err := trash.New(metaDir, runID, v)
+	require.NoError(t, err)
+
+	u, err := NewWithValidator(v, false, trasher)
+	require.NoError(t, err)
+
+	result := u.ExtractArchives(archiveFiles)
+
+	// All 6 archives should extract successfully.
+	assert.Equal(t, 6, result.ArchivesFound)
+	assert.Equal(t, 6, result.ArchivesProcessed)
+	assert.Equal(t, 6, result.ExtractedArchives)
+	assert.Equal(t, 6, result.DeletedArchives)
+	assert.Equal(t, 0, result.ErrorCount, "no archive-level errors")
+
+	// Verify each individual archive's content was extracted correctly.
+	for txtName, expectedBytes := range expectedContent {
+		got, err := os.ReadFile(filepath.Join(tmpDir, txtName))
+		require.NoError(t, err, "should be able to read %s", txtName)
+		assert.Equal(t, expectedBytes, got, "%s should contain real content", txtName)
+	}
+
+	// The backup archive's non-conflicting entry should also be extracted.
+	assert.FileExists(t, filepath.Join(tmpDir, "backup-manifest.txt"))
+
+	// The backup archive should have had its conflicting entries skipped.
+	// Processing order is alphabetical: alpha, backup, bravo, charlie, delta, echo.
+	// When backup.zip is processed, alpha.zip has already been dequeued so only
+	// the 4 remaining archives (bravo–echo) are still in the pending set.
+	var backupOp *ExtractOperation
+	for i := range result.Operations {
+		if result.Operations[i].ArchivePath == backupPath {
+			backupOp = &result.Operations[i]
+			break
+		}
+	}
+	require.NotNil(t, backupOp, "backup.zip operation should exist")
+	assert.Equal(t, 4, backupOp.SkippedEntries, "4 archive-name entries should be skipped (alpha already processed)")
+	for _, entryErr := range backupOp.EntryErrors {
+		assert.Contains(t, entryErr, "queued archive")
+	}
+}
+
 // TestUnzipper_ExtractArchives_DeeplyNestedArchives verifies that zip-in-zip
 // nesting four levels deep is fully extracted in a single run, and that a
 // second run from the top finds nothing left to process (idempotent).
