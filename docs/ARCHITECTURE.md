@@ -56,7 +56,7 @@ Run IDs follow the format `<command>-YYYYMMDDTHHmmss` (e.g. `flatten-20260208T14
 
 ![Package dependencies](deps.svg)
 
-Auto-generated from `go list -json ./...`. Regenerate with `make docs-deps`.
+Auto-generated via `scripts/depgraph.sh` (uses `go list -f` with a Go template). Regenerate with `make docs-deps`.
 
 ## Why these decisions
 
