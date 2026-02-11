@@ -1,0 +1,181 @@
+# Safety model: "How is safety enforced?"
+#
+# These aren't independent features - they form a connected system.
+# Every mutation passes through the validator, gets journaled,
+# and uses trash instead of deletion.
+
+direction: down
+
+# The safety system
+system: "Safety System" {
+  style.fill: "#f8f9fa"
+
+  validator: "Path Validator" {
+    style.fill: "#fce8e6"
+    style.stroke: "#ea4335"
+    style.font-color: "#c5221f"
+
+    desc: ||md
+      **Created once, injected everywhere**
+
+      `safepath.New(targetDir)` at workflow start.
+      Passed to every domain package via
+      `NewWithValidator(validator, ...)`.
+
+      Every file operation goes through:
+      - `ValidatePathForRead(path)`
+      - `ValidatePathForWrite(path)`
+      - `SafeRename(old, new)`
+      - `SafeRemove(path)`
+      - `SafeMkdirAll(path)`
+      - `ValidateSymlink(path)`
+
+      Rejects: path escape, symlink escape,
+      root removal.
+    ||
+  }
+
+  lock: "Advisory Lock" {
+    style.fill: "#e8f0fe"
+    style.stroke: "#4285f4"
+
+    desc: ||md
+      **Prevents concurrent access**
+
+      `filelock.Acquire(metaDir.LockPath())`
+
+      Non-blocking flock with LOCK_EX|LOCK_NB.
+      File: `.btidy/lock`.
+      Released on workflow completion (defer).
+      Immediate error if another btidy
+      process holds the lock.
+    ||
+  }
+
+  trash_sys: "Trash System" {
+    style.fill: "#e6f4ea"
+    style.stroke: "#34a853"
+
+    desc: ||md
+      **Preserves directory structure**
+
+      `trash.Trash(path)` moves file to
+      `.btidy/trash/<run-id>/<relative-path>`.
+
+      Original directory structure is mirrored
+      inside the trash directory, so restore
+      can put files back exactly where they were.
+
+      Files are never permanently deleted
+      except by explicit `purge --force`.
+    ||
+  }
+
+  journal_sys: "Journal System" {
+    style.fill: "#f3e8fd"
+    style.stroke: "#a142f4"
+
+    desc: ||md
+      **Two-phase write: intent then confirm**
+
+      For each mutation, `writeJournal()` writes:
+      1. Intent entry (Success=false)
+      2. Confirmation entry (Success=true)
+
+      Format: JSONL at `.btidy/journal/<run-id>.jsonl`.
+      Paths stored as relative to root.
+
+      Unconfirmed intent entries indicate a crash
+      or interrupted operation.
+    ||
+  }
+}
+
+# Connections showing how they work together
+system.lock -> system.validator: lock first {
+  style.stroke: "#666"
+}
+
+system.validator -> system.trash_sys: validator injected {
+  style.stroke: "#666"
+}
+
+system.validator -> system.journal_sys: validated paths logged {
+  style.stroke: "#666"
+}
+
+system.trash_sys -> system.journal_sys: trash ops logged {
+  style.stroke: "#666"
+}
+
+# Undo: the system working in reverse
+undo: "Undo (system in reverse)" {
+  style.fill: "#fff3e0"
+  style.stroke: "#e65100"
+
+  desc: ||md
+    `RunUndo()` reads journal entries in reverse:
+
+    1. Acquire lock (same as forward path)
+    2. Read journal via `Reader.EntriesReverse()`
+    3. Filter to confirmed entries only
+    4. For each entry (reverse order):
+       - **trash** -> `undoTrash()`: restore from trash
+       - **rename** -> `undoRename()`: reverse the rename
+       - **extract** -> skip (archive restored via trash)
+    5. `verifyHashBeforeUndo()`: re-hash before restoring
+    6. Mark journal as `.rolled-back.jsonl`
+  ||
+}
+
+system.journal_sys -> undo: journal enables reverse {
+  style.stroke: "#e65100"
+  style.stroke-dash: 3
+}
+
+system.trash_sys -> undo: trash preserves originals {
+  style.stroke: "#e65100"
+  style.stroke-dash: 3
+}
+
+# Purge: the only irrecoverable operation
+purge: "Purge (irrecoverable)" {
+  style.fill: "#fce8e6"
+  style.stroke: "#ea4335"
+
+  desc: ||md
+    `RunPurge()` permanently deletes trash.
+    Requires explicit filters:
+    - `--run <id>` (specific run)
+    - `--older-than <dur>` (by age)
+    - `--all --force` (everything)
+
+    The only operation that destroys data.
+  ||
+}
+
+system.trash_sys -> purge: explicit deletion {
+  style.stroke: "#ea4335"
+  style.stroke-dash: 3
+}
+
+# Snapshot: pre-operation state capture
+snapshot: "Manifest Snapshot" {
+  style.fill: "#fef7e0"
+  style.stroke: "#f9ab00"
+
+  desc: ||md
+    `generateSnapshot()` creates a cryptographic
+    inventory before each operation:
+    `.btidy/manifests/<run-id>.json`
+
+    SHA-256 hash of every file.
+    Enables before/after comparison.
+    Skippable with `--no-snapshot`.
+  ||
+}
+
+system.validator -> snapshot: used for manifest gen {
+  style.stroke: "#666"
+  style.stroke-dash: 3
+}

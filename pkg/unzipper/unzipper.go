@@ -6,65 +6,146 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"math"
 	"os"
 	"path/filepath"
-	"sort"
 	"strings"
 
 	"btidy/pkg/collector"
-	"btidy/pkg/metadata"
-	"btidy/pkg/progress"
 	"btidy/pkg/safepath"
 	"btidy/pkg/trash"
 )
 
 const (
 	progressStageExtracting = "extracting"
-	maxExtractedFileSize    = int64(8 * 1024 * 1024 * 1024) // 8 GiB per file
 )
 
 // ExtractOperation represents a single archive extraction operation.
 type ExtractOperation struct {
-	ArchivePath        string
-	ExtractedFiles     int
-	ExtractedDirs      int
-	SkippedEntries     int      // Entries skipped due to per-entry errors (extraction continues)
-	EntryErrors        []string // Human-readable descriptions of per-entry failures
-	NestedArchives     int
+	// ArchivePath is the absolute path to the archive file being extracted.
+	ArchivePath string
+
+	// ExtractedFiles is the count of regular files successfully extracted from this archive.
+	ExtractedFiles int
+
+	// ExtractedDirs is the count of directories created during extraction.
+	ExtractedDirs int
+
+	// SkippedEntries is the count of archive entries that were skipped (e.g., existing files in non-overwrite mode).
+	SkippedEntries int
+
+	// EntryErrors contains error messages for individual entries that failed during extraction.
+	EntryErrors []string
+
+	// NestedArchives is the count of archive files discovered within this archive during extraction.
+	NestedArchives int
+
+	// ExtractionComplete indicates whether the archive was fully extracted without fatal errors.
 	ExtractionComplete bool
-	DeletedArchive     bool
-	TrashedTo          string // Trash destination for deleted archive (empty when trasher is nil)
-	Skipped            bool
-	SkipReason         string
-	Error              error // Fatal archive-level error (archive not extracted)
+
+	// DeletedArchive indicates whether the source archive was deleted after successful extraction.
+	DeletedArchive bool
+
+	// TrashedTo is the trash location path if the archive was soft-deleted (moved to trash).
+	TrashedTo string
+
+	// Skipped indicates whether this archive was skipped entirely without attempting extraction.
+	Skipped bool
+
+	// SkipReason contains the explanation when Skipped is true (e.g., "not a zip file", "path escape").
+	SkipReason string
+
+	// Error contains any fatal error that prevented extraction or archive deletion.
+	Error error
 }
 
-// Result contains results for an unzip run.
+// Result contains the aggregated statistics and outcomes from an unzip operation.
+// Use this to understand the overall impact of extraction: how many archives were
+// found and processed, how many files were extracted, and whether any errors occurred.
+// The Operations slice provides detailed per-archive breakdown.
 type Result struct {
-	Operations        []ExtractOperation
-	TotalFiles        int
-	ArchivesFound     int
+	// Operations contains detailed results for each individual archive extraction.
+	Operations []ExtractOperation
+
+	// TotalFiles is the total number of files scanned in the target directory.
+	TotalFiles int
+
+	// ArchivesFound is the number of archive files discovered during collection.
+	ArchivesFound int
+
+	// ArchivesProcessed is the number of archives that were attempted for extraction.
 	ArchivesProcessed int
+
+	// ExtractedArchives is the count of archives successfully extracted.
 	ExtractedArchives int
-	DeletedArchives   int
-	ExtractedFiles    int
-	ExtractedDirs     int
-	SkippedCount      int
-	ErrorCount        int
+
+	// DeletedArchives is the number of archives removed after successful extraction.
+	DeletedArchives int
+
+	// ExtractedFiles is the total number of files extracted across all archives.
+	ExtractedFiles int
+
+	// ExtractedDirs is the total number of directories created during extraction.
+	ExtractedDirs int
+
+	// SkippedCount is the number of archives skipped (e.g., already extracted).
+	SkippedCount int
+
+	// ErrorCount is the number of archives that failed to extract.
+	ErrorCount int
 }
 
 // Unzipper extracts archives recursively while enforcing path containment.
+//
+// An Unzipper orchestrates the extraction of archive files within a validated root directory.
+// It ensures all extracted paths remain within the target directory boundary through safepath
+// validation, preventing path traversal attacks and symlink escapes.
+//
+// Key features:
+//   - Recursive extraction: archives within archives are discovered and extracted
+//   - Path safety: all extraction paths validated via safepath.Validator
+//   - Soft-delete support: optional trash integration for reversible archive removal
+//   - Dry-run mode: preview extraction without modifying the filesystem
+//   - Progress tracking: reports extraction progress through callback functions
+//
+// Usage:
+//
+//	// Create with automatic validator
+//	uz, err := unzipper.New("/path/to/target", false)
+//
+//	// Or with existing validator and trash support
+//	uz, err := unzipper.NewWithValidator(validator, false, trasher)
+//
+//	// Extract archives with progress tracking
+//	result := uz.ExtractArchivesWithProgress(files, func(stage string, processed, total int) {
+//	    fmt.Printf("Stage: %s, Progress: %d/%d\n", stage, processed, total)
+//	})
+//
+// Safety guarantees:
+//   - All extraction paths validated before creation
+//   - Symlinks that escape root directory are rejected
+//   - Archive entries with path traversal attempts (../) are blocked
+//   - Overwrite protection available through configuration
+//   - Optional soft-delete moves archives to trash instead of permanent deletion
+//
+// The Unzipper is safe for concurrent use within different root directories,
+// but should not be shared across goroutines for the same extraction operation.
 type Unzipper struct {
-	dryRun    bool
-	validator *safepath.Validator
-	trasher   *trash.Trasher
-}
+	// dryRun when true prevents all filesystem modifications.
+	// Extraction logic executes but no files are created, moved, or deleted.
+	// Use this to preview what would happen before committing changes.
+	dryRun bool
 
-type entryResult struct {
-	extractedFiles int
-	extractedDirs  int
-	nestedArchive  string
+	// validator enforces path containment for all extraction operations.
+	// Every extracted file path is validated to ensure it stays within the
+	// root directory. This prevents malicious archives from writing outside
+	// the target directory through techniques like path traversal or symlinks.
+	validator *safepath.Validator
+
+	// trasher enables soft-delete (reversible removal) of archives after extraction.
+	// When set, successfully extracted archives are moved to .btidy/trash/<run-id>/
+	// instead of being permanently deleted. This allows undo operations.
+	// If nil, archives are permanently deleted when deletion is requested.
+	trasher *trash.Trasher
 }
 
 // New creates an Unzipper rooted at rootDir.
@@ -79,7 +160,11 @@ func New(rootDir string, dryRun bool) (*Unzipper, error) {
 
 // NewWithValidator creates an Unzipper with an existing validator.
 // An optional trasher enables soft-delete (move to trash) instead of permanent removal.
-func NewWithValidator(validator *safepath.Validator, dryRun bool, trasher *trash.Trasher) (*Unzipper, error) {
+func NewWithValidator(
+	validator *safepath.Validator,
+	dryRun bool,
+	trasher *trash.Trasher,
+) (*Unzipper, error) {
 	if validator == nil {
 		return nil, errors.New("validator is required")
 	}
@@ -91,461 +176,349 @@ func NewWithValidator(validator *safepath.Validator, dryRun bool, trasher *trash
 	}, nil
 }
 
-// ExtractArchives extracts all .zip files from the provided file list.
-func (u *Unzipper) ExtractArchives(files []collector.FileInfo) Result {
-	return u.ExtractArchivesWithProgress(files, nil)
-}
-
-// ExtractArchivesWithProgress extracts archives recursively and emits progress.
+// ExtractArchivesWithProgressRecursively extracts all archive files from the
+// provided file list, then re-scans the directory to discover and extract any
+// nested archives that were contained within the originals. This process repeats
+// until no more archives remain.
 //
-// After processing all archives from the initial file list (and any nested
-// archives discovered inside them), it rescans the root directory for .zip
-// files that may have been missed.  This loop repeats until the filesystem
-// contains no unprocessed archives.
-func (u *Unzipper) ExtractArchivesWithProgress(files []collector.FileInfo, onProgress func(stage string, processed, total int)) Result {
-	result := Result{
-		TotalFiles: len(files),
-		Operations: make([]ExtractOperation, 0),
+// The progress callback is invoked during extraction to report the current stage,
+// number of archives processed, and total archive count. Pass nil to disable
+// progress reporting.
+//
+// It determines the root directory from the common ancestor of all provided files
+// and returns an empty [Result] if the file list is empty. On each iteration,
+// only archive files are selected for extraction; after extraction, the directory
+// is re-collected to find any newly revealed archives.
+//
+// Returns the aggregated [Result] and any error encountered during extraction or
+// file collection.
+func (u *Unzipper) ExtractArchivesWithProgressRecursively(
+	files []collector.FileInfo,
+	progress func(stage string, processed, total int),
+) (Result, error) {
+	res := Result{TotalFiles: len(files)}
+	rootDir := getRootDirectory(files)
+
+	if rootDir == "" {
+		return res, nil
 	}
 
-	queue := collectInitialArchives(files)
-	if len(queue) == 0 {
-		return result
-	}
-
-	result.ArchivesFound = len(queue)
-	processed := make(map[string]bool, len(queue))
+	processed := make(map[string]bool)
 
 	for {
-		u.drainQueue(queue, processed, &result, onProgress)
-
-		// Rescan the filesystem for archives the entry-based discovery missed.
-		queue = u.discoverArchivesOnDisk(processed)
-		if len(queue) == 0 {
+		archives := filterNewArchives(files, processed)
+		if len(archives) == 0 {
 			break
 		}
-		result.ArchivesFound += len(queue)
+
+		res.ArchivesFound += len(archives)
+
+		if err := u.extractBatch(archives, processed, progress, &res); err != nil {
+			return res, err
+		}
+
+		var err error
+		files, err = getAllFilesRecursively(rootDir)
+		if err != nil {
+			return res, err
+		}
+
+		res.TotalFiles = len(files)
 	}
 
-	return result
+	return res, nil
 }
 
-// drainQueue processes every archive in queue (and any nested archives
-// discovered from zip entries) until the queue is empty.
-func (u *Unzipper) drainQueue(queue []string, processed map[string]bool, result *Result, onProgress func(stage string, processed, total int)) {
-	queued := make(map[string]bool, len(queue))
-	for _, archivePath := range queue {
-		queued[archivePath] = true
+// filterNewArchives returns archives from files that have not yet been processed.
+func filterNewArchives(files []collector.FileInfo, processed map[string]bool) []collector.FileInfo {
+	archives := filterOnlyArchives(files)
+
+	unprocessed := make([]collector.FileInfo, 0, len(archives))
+	for _, a := range archives {
+		key := filepath.Join(a.Dir, a.Name)
+		if !processed[key] {
+			unprocessed = append(unprocessed, a)
+		}
 	}
 
-	for len(queue) > 0 {
-		archivePath := queue[0]
-		queue = queue[1:]
-		delete(queued, archivePath)
+	return unprocessed
+}
 
-		if processed[archivePath] {
-			continue
+// extractBatch processes a batch of archives, updating the result and processed map.
+func (u *Unzipper) extractBatch(
+	archives []collector.FileInfo,
+	processed map[string]bool,
+	progress func(stage string, processed, total int),
+	res *Result,
+) error {
+	for i, archive := range archives {
+		if progress != nil {
+			progress(progressStageExtracting, i, len(archives))
 		}
+
+		archivePath := filepath.Join(archive.Dir, archive.Name)
 		processed[archivePath] = true
 
-		op, discoveredArchives := u.processArchive(archivePath, queued)
-		result.Operations = append(result.Operations, op)
-		result.accumulateOperation(op)
+		op, err := u.processArchive(archive, archivePath)
+		res.ArchivesProcessed++
 
-		if op.ExtractionComplete {
-			for _, discoveredPath := range discoveredArchives {
-				if processed[discoveredPath] || queued[discoveredPath] {
-					continue
-				}
-
-				queue = append(queue, discoveredPath)
-				queued[discoveredPath] = true
-				result.ArchivesFound++
-			}
-			sort.Strings(queue)
+		if err != nil {
+			res.ErrorCount++
+			res.Operations = append(res.Operations, op)
+			return err
 		}
 
-		progress.EmitStage(onProgress, progressStageExtracting, len(result.Operations), len(result.Operations)+len(queue))
+		res.ExtractedArchives++
+		res.ExtractedFiles += op.ExtractedFiles
+		res.ExtractedDirs += op.ExtractedDirs
+
+		op.DeletedArchive = true
+		res.DeletedArchives++
+		res.Operations = append(res.Operations, op)
 	}
+
+	if progress != nil {
+		progress(progressStageExtracting, len(archives), len(archives))
+	}
+
+	return nil
 }
 
-func (u *Unzipper) processArchive(archivePath string, pendingArchives map[string]bool) (operation ExtractOperation, discovered []string) {
-	operation = ExtractOperation{ArchivePath: archivePath}
-
-	if !isZipArchive(archivePath) {
-		operation.Skipped = true
-		operation.SkipReason = "not a zip archive"
-		return operation, nil
-	}
-
-	// In dry-run mode, nested archives discovered inside other archives have
-	// not been extracted to disk yet.  We cannot peek inside them, but we can
-	// report that they would be processed.
-	if u.dryRun {
-		if _, statErr := os.Lstat(archivePath); os.IsNotExist(statErr) {
-			operation.ExtractionComplete = true
-			operation.DeletedArchive = true
-			return operation, nil
-		}
-	}
-
-	if err := u.validator.ValidatePathForRead(archivePath); err != nil {
-		operation.Error = fmt.Errorf("archive path escapes root: %w", err)
-		return operation, nil
-	}
-
-	reader, err := zip.OpenReader(archivePath)
-	if err != nil {
-		operation.Error = fmt.Errorf("failed to open archive: %w", err)
-		return operation, nil
-	}
-	defer reader.Close()
-
-	destinationDir := filepath.Dir(archivePath)
-	discovered = make([]string, 0)
-	skippedNames := make(map[string]bool)
-
-	for _, file := range reader.File {
-		entryOutcome, entryErr := u.extractEntry(archivePath, destinationDir, file, pendingArchives)
-		if entryErr != nil {
-			operation.SkippedEntries++
-			operation.EntryErrors = append(operation.EntryErrors,
-				fmt.Sprintf("%s: %v", file.Name, entryErr))
-			skippedNames[file.Name] = true
-			continue
-		}
-
-		operation.ExtractedFiles += entryOutcome.extractedFiles
-		operation.ExtractedDirs += entryOutcome.extractedDirs
-		if entryOutcome.nestedArchive != "" {
-			discovered = append(discovered, entryOutcome.nestedArchive)
-			operation.NestedArchives++
-		}
-	}
-
-	// Verify all extracted regular files exist with expected sizes before
-	// deleting the archive. This prevents data loss if extraction was partial.
-	if !u.dryRun {
-		if err := u.verifyExtractedFiles(reader.File, destinationDir, skippedNames); err != nil {
-			operation.Error = fmt.Errorf("post-extraction verification failed: %w", err)
-			return operation, nil
-		}
-	}
-
-	operation.ExtractionComplete = true
-	operation.DeletedArchive = true
+// processArchive extracts or inspects a single archive, then removes it if not in dry-run mode.
+func (u *Unzipper) processArchive(archive collector.FileInfo, archivePath string) (ExtractOperation, error) {
+	var op ExtractOperation
+	var err error
 
 	if u.dryRun {
-		return operation, discovered
-	}
-
-	trashedTo, trashErr := u.trashOrRemove(archivePath)
-	if trashErr != nil {
-		operation.DeletedArchive = false
-		operation.Error = trashErr
+		op, err = inspectArchive(archive)
 	} else {
-		operation.TrashedTo = trashedTo
+		op, err = unzip(archive)
 	}
 
-	return operation, discovered
+	if err != nil {
+		return op, err
+	}
+
+	if !u.dryRun {
+		trashedTo, rmErr := u.removeArchive(archivePath)
+		if rmErr != nil {
+			op.Error = rmErr
+			return op, rmErr
+		}
+		op.TrashedTo = trashedTo
+	}
+
+	return op, nil
 }
 
-// trashOrRemove soft-deletes a file when a trasher is configured, otherwise
-// permanently removes it. Returns the trash destination (empty on hard delete).
-func (u *Unzipper) trashOrRemove(path string) (string, error) {
+// removeArchive deletes or trashes the archive at the given path.
+// Returns the trash destination path (non-empty only when using a trasher).
+func (u *Unzipper) removeArchive(archivePath string) (string, error) {
 	if u.trasher != nil {
-		return u.trasher.TrashWithDest(path)
+		dest, err := u.trasher.TrashWithDest(archivePath)
+		if err != nil {
+			return "", fmt.Errorf("failed to trash archive %s: %w", archivePath, err)
+		}
+		return dest, nil
 	}
 
-	if err := u.validator.SafeRemove(path); err != nil {
-		return "", fmt.Errorf("failed to delete archive: %w", err)
+	if err := os.Remove(archivePath); err != nil {
+		return "", fmt.Errorf("failed to remove archive %s: %w", archivePath, err)
 	}
 
 	return "", nil
 }
 
-// backupExistingFile checks whether a file already exists at the given path and,
-// if so, backs it up to trash before extraction overwrites it. Without a trasher
-// the extraction is refused to prevent silent data loss.
-func (u *Unzipper) backupExistingFile(entryPath string) error {
-	if _, err := os.Lstat(entryPath); err != nil {
-		if os.IsNotExist(err) {
-			return nil // nothing to protect
-		}
-		return fmt.Errorf("cannot inspect existing file %q: %w", entryPath, err)
+// getRootDirectory computes the lowest common ancestor directory for a slice of
+// [collector.FileInfo]. It iteratively walks up the directory tree until it finds
+// a path that is a parent of (or equal to) every file's directory. Returns an
+// empty string if the slice is empty.
+func getRootDirectory(f []collector.FileInfo) string {
+	if len(f) == 0 {
+		return ""
 	}
 
-	if u.trasher != nil {
-		if _, err := u.trasher.TrashWithDest(entryPath); err != nil {
-			return fmt.Errorf("cannot back up existing file %q before overwrite: %w", entryPath, err)
-		}
-		return nil
-	}
-
-	return fmt.Errorf("refusing to overwrite existing file: %s", entryPath)
-}
-
-func (u *Unzipper) verifyExtractedFiles(entries []*zip.File, destinationDir string, skipped map[string]bool) error {
-	for _, file := range entries {
-		if skipped[file.Name] {
-			continue
-		}
-		if isDirectoryEntry(file) || file.Mode()&os.ModeSymlink != 0 {
-			continue
-		}
-
-		entryPath, err := u.resolveEntryPath(destinationDir, file.Name)
-		if err != nil {
-			return fmt.Errorf("cannot resolve %q: %w", file.Name, err)
-		}
-
-		info, err := os.Lstat(entryPath)
-		if err != nil {
-			return fmt.Errorf("extracted file missing %q: %w", entryPath, err)
-		}
-
-		actualSize := info.Size()
-		expectedSize := file.UncompressedSize64
-		if actualSize < 0 || expectedSize > uint64(math.MaxInt64) || actualSize != int64(expectedSize) {
-			return fmt.Errorf("size mismatch for %q (expected %d, got %d)",
-				entryPath, file.UncompressedSize64, info.Size())
-		}
-	}
-
-	return nil
-}
-
-func (u *Unzipper) extractEntry(archivePath, destinationDir string, file *zip.File, pendingArchives map[string]bool) (entryResult, error) {
-	result := entryResult{}
-
-	entryPath, err := u.resolveEntryPath(destinationDir, file.Name)
-	if err != nil {
-		return result, err
-	}
-
-	if entryPath == archivePath {
-		return result, fmt.Errorf("archive entry would overwrite source archive: %s", file.Name)
-	}
-
-	if pendingArchives[entryPath] {
-		return result, fmt.Errorf("entry would overwrite queued archive: %s", file.Name)
-	}
-
-	if err := u.validator.ValidatePathForWrite(entryPath); err != nil {
-		return result, fmt.Errorf("entry path escapes root: %w", err)
-	}
-
-	if isDirectoryEntry(file) {
-		result.extractedDirs = 1
-		if u.dryRun {
-			return result, nil
-		}
-
-		if err := os.MkdirAll(entryPath, 0o755); err != nil {
-			return result, fmt.Errorf("failed to create directory %q: %w", entryPath, err)
-		}
-
-		return result, nil
-	}
-
-	if file.Mode()&os.ModeSymlink != 0 {
-		return result, fmt.Errorf("symlink entries are not supported: %s", file.Name)
-	}
-
-	if err := u.ensureParentDirectory(entryPath); err != nil {
-		return result, err
-	}
-
-	result.extractedFiles = 1
-	if isZipArchive(entryPath) {
-		result.nestedArchive = entryPath
-	}
-
-	if u.dryRun {
-		return result, nil
-	}
-
-	// Protect existing files from being silently overwritten during extraction.
-	if err := u.backupExistingFile(entryPath); err != nil {
-		return result, err
-	}
-
-	if err := extractRegularFile(file, entryPath); err != nil {
-		return result, err
-	}
-
-	return result, nil
-}
-
-func (u *Unzipper) resolveEntryPath(destinationDir, entryName string) (string, error) {
-	trimmedName := strings.TrimSpace(entryName)
-	if trimmedName == "" {
-		return "", errors.New("archive entry has empty path")
-	}
-
-	relativePath := filepath.Clean(filepath.FromSlash(trimmedName))
-	resolvedPath, err := u.validator.ResolveSafePath(destinationDir, relativePath)
-	if err != nil {
-		return "", fmt.Errorf("entry path escapes root: %w", err)
-	}
-
-	return resolvedPath, nil
-}
-
-func (u *Unzipper) ensureParentDirectory(path string) error {
-	parentDir := filepath.Dir(path)
-	if err := u.validator.ValidatePathForWrite(parentDir); err != nil {
-		return fmt.Errorf("entry parent path escapes root: %w", err)
-	}
-
-	if u.dryRun {
-		return nil
-	}
-
-	if err := os.MkdirAll(parentDir, 0o755); err != nil {
-		return fmt.Errorf("failed to create parent directory %q: %w", parentDir, err)
-	}
-
-	return nil
-}
-
-func extractRegularFile(file *zip.File, destinationPath string) error {
-	reader, err := file.Open()
-	if err != nil {
-		return fmt.Errorf("failed to open archive entry %q: %w", file.Name, err)
-	}
-	defer reader.Close()
-
-	if file.UncompressedSize64 > uint64(maxExtractedFileSize) {
-		return fmt.Errorf("archive entry %q exceeds size limit (%d bytes)", file.Name, maxExtractedFileSize)
-	}
-
-	mode := file.Mode().Perm()
-	if mode == 0 {
-		mode = 0o600
-	}
-
-	writer, err := os.OpenFile(destinationPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, mode)
-	if err != nil {
-		return fmt.Errorf("failed to create extracted file %q: %w", destinationPath, err)
-	}
-
-	if err := copyArchiveEntry(writer, reader, maxExtractedFileSize); err != nil {
-		_ = writer.Close()
-		_ = os.Remove(destinationPath) // Clean up partial file.
-		return fmt.Errorf("failed to write extracted file %q: %w", destinationPath, err)
-	}
-
-	if err := writer.Close(); err != nil {
-		_ = os.Remove(destinationPath) // Clean up potentially incomplete file.
-		return fmt.Errorf("failed to close extracted file %q: %w", destinationPath, err)
-	}
-
-	return nil
-}
-
-func copyArchiveEntry(writer io.Writer, reader io.Reader, maxBytes int64) error {
-	const copyBufferSize = 32 * 1024
-
-	buffer := make([]byte, copyBufferSize)
-	var written int64
-
-	for {
-		readCount, readErr := reader.Read(buffer)
-		if readCount > 0 {
-			written += int64(readCount)
-			if written > maxBytes {
-				return errors.New("entry exceeds configured size limit")
+	root := f[0].Dir
+	for _, fi := range f[1:] {
+		for !isSubPath(root, fi.Dir) {
+			parent := filepath.Dir(root)
+			if parent == root {
+				return root
 			}
-
-			writeCount, writeErr := writer.Write(buffer[:readCount])
-			if writeErr != nil {
-				return writeErr
-			}
-			if writeCount != readCount {
-				return io.ErrShortWrite
-			}
-		}
-
-		if errors.Is(readErr, io.EOF) {
-			return nil
-		}
-		if readErr != nil {
-			return readErr
+			root = parent
 		}
 	}
+
+	return root
 }
 
-func collectInitialArchives(files []collector.FileInfo) []string {
-	archives := make([]string, 0)
-	for _, file := range files {
-		if !isZipArchive(file.Path) {
+// isSubPath reports whether child is equal to or nested under parent.
+func isSubPath(parent, child string) bool {
+	return child == parent || strings.HasPrefix(child, parent+string(filepath.Separator))
+}
+
+// filterOnlyArchives filters a slice of FileInfo, returning only entries whose
+// filenames are recognized as archive formats.
+func filterOnlyArchives(blob []collector.FileInfo) []collector.FileInfo {
+	filteredBlob := make([]collector.FileInfo, 0)
+	for _, f := range blob {
+		if ok := isArchive(filepath.Join(f.Dir, f.Name)); ok {
+			filteredBlob = append(filteredBlob, f)
+		}
+	}
+
+	return filteredBlob
+}
+
+// unzip extracts all entries from the zip archive identified by file into the
+// same directory that contains the archive. It creates directories as needed and
+// writes regular files with their archived content. Archive entries containing
+// path traversal components (e.g., "../") are rejected to prevent zip-slip
+// attacks. Returns an ExtractOperation describing what was extracted and any
+// error encountered.
+func unzip(file collector.FileInfo) (ExtractOperation, error) {
+	archivePath := filepath.Join(file.Dir, file.Name)
+	op := ExtractOperation{ArchivePath: archivePath}
+
+	r, err := zip.OpenReader(archivePath)
+	if err != nil {
+		op.Error = fmt.Errorf("failed to open archive %s: %w", archivePath, err)
+		return op, op.Error
+	}
+	defer func() {
+		_ = r.Close()
+	}()
+
+	for _, entry := range r.File {
+		if strings.Contains(entry.Name, "..") {
+			op.Error = fmt.Errorf("illegal entry path %q: contains path traversal", entry.Name)
+			return op, op.Error
+		}
+
+		targetPath := filepath.Join(file.Dir, filepath.FromSlash(entry.Name))
+
+		if entry.FileInfo().IsDir() {
+			if mkErr := os.MkdirAll(targetPath, entry.Mode().Perm()|0o755); mkErr != nil {
+				op.Error = fmt.Errorf("failed to create directory %s: %w", targetPath, mkErr)
+				return op, op.Error
+			}
+			op.ExtractedDirs++
 			continue
 		}
 
-		archives = append(archives, file.Path)
+		parentDir := filepath.Dir(targetPath)
+		if mkErr := os.MkdirAll(parentDir, 0o755); mkErr != nil {
+			op.Error = fmt.Errorf("failed to create parent directory %s: %w", parentDir, mkErr)
+			return op, op.Error
+		}
+
+		if writeErr := extractFile(entry, targetPath); writeErr != nil {
+			op.Error = fmt.Errorf("failed to extract %s: %w", entry.Name, writeErr)
+			return op, op.Error
+		}
+		op.ExtractedFiles++
+
+		if isArchive(targetPath) {
+			op.NestedArchives++
+		}
 	}
 
-	sort.Strings(archives)
-	return archives
+	op.ExtractionComplete = true
+	return op, nil
 }
 
-// discoverArchivesOnDisk walks the root directory and returns paths to .zip
-// files that have not already been processed. The .btidy metadata directory
-// is always skipped. Walk errors are silently ignored so that inaccessible
-// subtrees do not prevent discovery of reachable archives.
-func (u *Unzipper) discoverArchivesOnDisk(processed map[string]bool) []string {
-	var archives []string
-	root := u.validator.Root()
+// inspectArchive reads the zip archive catalog without extracting any files,
+// returning an ExtractOperation with the counts that would result from a real
+// extraction. Used for dry-run mode.
+func inspectArchive(file collector.FileInfo) (ExtractOperation, error) {
+	archivePath := filepath.Join(file.Dir, file.Name)
+	op := ExtractOperation{ArchivePath: archivePath}
 
-	//nolint:errcheck // best-effort scan; inaccessible paths are skipped
-	filepath.Walk(root, func(path string, info os.FileInfo, err error) error {
-		if err != nil {
-			return filepath.SkipDir
+	r, err := zip.OpenReader(archivePath)
+	if err != nil {
+		op.Error = fmt.Errorf("failed to open archive %s: %w", archivePath, err)
+		return op, op.Error
+	}
+	defer func() {
+		_ = r.Close()
+	}()
+
+	for _, entry := range r.File {
+		if strings.Contains(entry.Name, "..") {
+			op.Error = fmt.Errorf("illegal entry path %q: contains path traversal", entry.Name)
+			return op, op.Error
 		}
-		if info.IsDir() {
-			if info.Name() == metadata.DirName {
-				return filepath.SkipDir
-			}
-			return nil
+
+		if entry.FileInfo().IsDir() {
+			op.ExtractedDirs++
+			continue
 		}
-		if !info.Mode().IsRegular() {
-			return nil
-		}
-		if isZipArchive(path) && !processed[path] {
-			archives = append(archives, path)
-		}
-		return nil
+
+		op.ExtractedFiles++
+	}
+
+	op.ExtractionComplete = true
+	return op, nil
+}
+
+// maxDecompressedSize is the maximum allowed size for a single extracted file (100 GiB).
+// This guards against zip-bomb attacks where a small archive expands to enormous size,
+// while still allowing extraction of very large legitimate files.
+const maxDecompressedSize = 100 << 30
+
+// extractFile writes a single zip file entry to targetPath. It opens the
+// compressed entry for reading, creates the destination file, and copies the
+// content. The destination file receives the permission bits stored in the
+// archive entry. Extraction is limited to [maxDecompressedSize] bytes to
+// prevent decompression bombs.
+func extractFile(entry *zip.File, targetPath string) error {
+	rc, err := entry.Open()
+	if err != nil {
+		return fmt.Errorf("failed to open entry: %w", err)
+	}
+	defer func() {
+		_ = rc.Close()
+	}()
+
+	outFile, err := os.OpenFile(targetPath, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, entry.Mode().Perm())
+	if err != nil {
+		return fmt.Errorf("failed to create file: %w", err)
+	}
+
+	if _, err = io.Copy(outFile, io.LimitReader(rc, maxDecompressedSize)); err != nil {
+		_ = outFile.Close()
+		return fmt.Errorf("failed to write file content: %w", err)
+	}
+
+	return outFile.Close()
+}
+
+// isArchive reports whether filePath is a valid zip archive by attempting to
+// open it with archive/zip. Returns true if the file can be opened as a zip
+// archive, false if it cannot (e.g., not a zip file or corrupted). The error
+// return is reserved for unexpected I/O failures; a file that simply isn't a
+// zip archive is not treated as an error.
+func isArchive(filePath string) bool {
+	r, err := zip.OpenReader(filePath)
+	if err != nil {
+		return false
+	}
+	_ = r.Close()
+
+	return true
+}
+
+// getAllFilesRecursively collects all files under rootDir, skipping the .btidy
+// metadata directory. It returns a slice of FileInfo for every regular file found.
+func getAllFilesRecursively(rootDir string) ([]collector.FileInfo, error) {
+	c := collector.New(collector.Options{
+		SkipDirs: []string{".btidy"},
 	})
 
-	sort.Strings(archives)
-	return archives
-}
-
-func isDirectoryEntry(file *zip.File) bool {
-	return file.FileInfo().IsDir() || strings.HasSuffix(file.Name, "/")
-}
-
-func isZipArchive(path string) bool {
-	return strings.EqualFold(filepath.Ext(path), ".zip")
-}
-
-func (r *Result) accumulateOperation(op ExtractOperation) {
-	r.ArchivesProcessed++
-
-	if op.ExtractionComplete {
-		r.ExtractedArchives++
-		r.ExtractedFiles += op.ExtractedFiles
-		r.ExtractedDirs += op.ExtractedDirs
-		if op.DeletedArchive {
-			r.DeletedArchives++
-		}
+	files, err := c.Collect(rootDir)
+	if err != nil {
+		return nil, fmt.Errorf("failed to collect files: %w", err)
 	}
 
-	switch {
-	case op.Error != nil:
-		r.ErrorCount++
-	case op.Skipped:
-		r.SkippedCount++
-	}
+	return files, nil
 }

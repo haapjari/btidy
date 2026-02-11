@@ -1,0 +1,138 @@
+# Request lifecycle: "How does a command execute?"
+#
+# Every mutating command follows the same five-phase workflow,
+# orchestrated by runFileWorkflow() in pkg/usecase/service.go.
+
+direction: right
+
+phases: "Shared Workflow (runFileWorkflow)" {
+  style.fill: "#f8f9fa"
+
+  lock: "1. Lock" {
+    style.fill: "#fce8e6"
+    style.stroke: "#ea4335"
+    tooltip: "Non-blocking advisory lock"
+
+    _.desc: |md
+      `acquireWorkflowLock(target)`
+      `filelock.Acquire(metaDir.LockPath())`
+
+      Creates `.btidy/lock` to prevent
+      concurrent btidy processes.
+    |
+  }
+
+  collect: "2. Collect" {
+    style.fill: "#e8f0fe"
+    style.stroke: "#4285f4"
+
+    _.desc: |md
+      `Service.collectFiles(rootDir)`
+      `collector.Collect(rootDir)`
+
+      Walks directory tree, skips
+      `.btidy/` and configured patterns.
+      Returns `[]FileInfo`.
+    |
+  }
+
+  snapshot: "3. Snapshot" {
+    style.fill: "#fef7e0"
+    style.stroke: "#f9ab00"
+
+    _.desc: |md
+      `Service.generateSnapshot(target, command)`
+      `manifest.Generate()` + `manifest.Save()`
+
+      Pre-operation manifest saved to
+      `.btidy/manifests/<run-id>.json`.
+      Skipped in dry-run mode or `--no-snapshot`.
+    |
+  }
+
+  execute: "4. Execute" {
+    style.fill: "#e6f4ea"
+    style.stroke: "#34a853"
+
+    _.desc: |md
+      Command-specific domain operation:
+      - `renamer.RenameFilesWithProgress()`
+      - `flattener.FlattenFilesWithProgress()`
+      - `deduplicator.FindDuplicatesWithProgress()`
+      - `organizer.OrganizeFilesWithProgress()`
+      - `unzipper.ExtractArchivesWithProgress()`
+
+      All mutations through `safepath.Validator`.
+      Soft-deletes through `trash.Trasher`.
+    |
+  }
+
+  journal: "5. Journal" {
+    style.fill: "#f3e8fd"
+    style.stroke: "#a142f4"
+
+    _.desc: |md
+      `writeJournal(target, command, entries)`
+      `journal.NewWriter()` + `writer.Log()`
+
+      Two-phase entries per operation:
+      intent (Success=false) then
+      confirmation (Success=true).
+      Written to `.btidy/journal/<run-id>.jsonl`.
+    |
+  }
+
+  lock -> collect: ""
+  collect -> snapshot: ""
+  snapshot -> execute: ""
+  execute -> journal: ""
+}
+
+# Generic vs command-specific
+generic: "Generic (shared)" {
+  style.fill: "#f0f0f0"
+  style.stroke: "#999"
+  style.stroke-dash: 3
+
+  _.note: |md
+    Phases 1, 2, 3, 5 are identical
+    for all mutating commands.
+    Implemented once in `runFileWorkflow[T]()`.
+  |
+}
+
+specific: "Command-Specific" {
+  style.fill: "#e6f4ea"
+  style.stroke: "#34a853"
+  style.stroke-dash: 3
+
+  _.note: |md
+    Phase 4 (Execute) is the only
+    phase that varies per command.
+    Each command provides an executor
+    function via `renameExecutor()`,
+    `flattenExecutor()`, etc.
+  |
+}
+
+generic -> phases.lock
+generic -> phases.collect
+generic -> phases.snapshot
+generic -> phases.journal
+specific -> phases.execute
+
+# Entry points
+entry: "resolveWorkflowTarget()" {
+  style.fill: "#fff"
+  tooltip: "Validates target dir + creates safepath.Validator"
+}
+
+entry -> phases.lock: "target validated"
+
+# Exit
+exit: "runCheckedExecution()" {
+  style.fill: "#fff"
+  tooltip: "Checks for ErrPathEscape / ErrSymlinkEscape in results"
+}
+
+phases.journal -> exit: "results checked"

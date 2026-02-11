@@ -564,9 +564,9 @@ func unzipExecutor(dryRun bool, onProgress ProgressCallback) func(rootDir string
 			return unzipper.Result{}, fmt.Errorf("failed to create unzipper: %w", err)
 		}
 
-		return u.ExtractArchivesWithProgress(files, func(stage string, processed, total int) {
+		return u.ExtractArchivesWithProgressRecursively(files, func(stage string, processed, total int) {
 			progress.EmitStage(onProgress, stage, processed, total)
-		}), nil
+		})
 	}
 }
 

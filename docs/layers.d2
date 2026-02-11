@@ -1,0 +1,97 @@
+# Layer architecture: "Where does code live?"
+#
+# Three layers with strict downward dependency direction.
+# The safepath.Validator threads through all layers as a cross-cutting concern.
+
+direction: down
+
+cli: "CLI Layer" {
+  style.fill: "#e8f0fe"
+  style.stroke: "#4285f4"
+
+  cmd: "cmd/" {
+    tooltip: "Cobra commands + shared helpers"
+    root: root.go
+    common: common.go
+    unzip: unzip.go
+    rename: rename.go
+    flatten: flatten.go
+    organize: organize.go
+    duplicate: duplicate.go
+    manifest: manifest.go
+    undo: undo.go
+    purge: purge.go
+  }
+}
+
+orchestration: "Orchestration Layer" {
+  style.fill: "#fef7e0"
+  style.stroke: "#f9ab00"
+
+  usecase: "pkg/usecase/" {
+    tooltip: "Service coordinates workflows with Go generics"
+    service: service.go
+  }
+}
+
+domain: "Domain Packages" {
+  style.fill: "#e6f4ea"
+  style.stroke: "#34a853"
+
+  grid-columns: 4
+
+  collector: pkg/collector
+  hasher: pkg/hasher
+  sanitizer: pkg/sanitizer
+  renamer: pkg/renamer
+  flattener: pkg/flattener
+  deduplicator: pkg/deduplicator
+  organizer: pkg/organizer
+  unzipper: pkg/unzipper
+  manifest: pkg/manifest
+  safepath: "pkg/safepath" {
+    style.stroke: "#ea4335"
+    style.font-color: "#ea4335"
+    tooltip: "Security-critical path validation"
+  }
+  trash: pkg/trash
+  journal: pkg/journal
+  metadata: pkg/metadata
+  filelock: pkg/filelock
+  progress: pkg/progress
+}
+
+# Layer dependencies (always downward)
+cli.cmd -> orchestration.usecase: delegates
+
+orchestration.usecase -> domain.collector: walks files
+orchestration.usecase -> domain.hasher
+orchestration.usecase -> domain.renamer
+orchestration.usecase -> domain.flattener
+orchestration.usecase -> domain.deduplicator
+orchestration.usecase -> domain.organizer
+orchestration.usecase -> domain.unzipper
+orchestration.usecase -> domain.manifest
+orchestration.usecase -> domain.trash
+orchestration.usecase -> domain.journal
+orchestration.usecase -> domain.metadata
+orchestration.usecase -> domain.filelock: acquires lock
+orchestration.usecase -> domain.safepath: creates validator
+orchestration.usecase -> domain.progress
+
+# Cross-cutting: validator injected into domain packages
+validator: "safepath.Validator" {
+  style.stroke: "#ea4335"
+  style.stroke-dash: 3
+  style.font-color: "#ea4335"
+  tooltip: "Created once per workflow, injected into every domain package via NewWithValidator()"
+}
+
+validator -> domain.renamer: injected {style.stroke-dash: 3; style.stroke: "#ea4335"}
+validator -> domain.flattener: injected {style.stroke-dash: 3; style.stroke: "#ea4335"}
+validator -> domain.deduplicator: injected {style.stroke-dash: 3; style.stroke: "#ea4335"}
+validator -> domain.organizer: injected {style.stroke-dash: 3; style.stroke: "#ea4335"}
+validator -> domain.unzipper: injected {style.stroke-dash: 3; style.stroke: "#ea4335"}
+validator -> domain.manifest: injected {style.stroke-dash: 3; style.stroke: "#ea4335"}
+validator -> domain.trash: injected {style.stroke-dash: 3; style.stroke: "#ea4335"}
+validator -> domain.metadata: injected {style.stroke-dash: 3; style.stroke: "#ea4335"}
