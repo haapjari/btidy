@@ -5,14 +5,702 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
-	"math/rand"
+	"math/rand/v2"
 	"os"
 	"path/filepath"
 	"testing"
 
-	require "github.com/stretchr/testify/require"
-	assert "github.com/stretchr/testify/require"
+	"btidy/pkg/collector"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
+
+func TestUnzip(t *testing.T) {
+	t.Run("extracts files from valid zip archive", func(t *testing.T) {
+		root := t.TempDir()
+
+		srcDir := filepath.Join(root, "src")
+		require.NoError(t, os.MkdirAll(srcDir, 0755))
+		require.NoError(t, os.WriteFile(filepath.Join(srcDir, "hello.txt"), []byte("hello world"), 0644))
+		require.NoError(t, os.WriteFile(filepath.Join(srcDir, "data.bin"), []byte("binary data"), 0644))
+
+		archivePath := filepath.Join(root, "test.zip")
+		createZipArchive(t, srcDir, archivePath)
+
+		require.NoError(t, os.RemoveAll(srcDir))
+
+		file := collector.FileInfo{
+			Dir:  root,
+			Name: "test.zip",
+			Path: archivePath,
+		}
+
+		_, err := unzip(file)
+		require.NoError(t, err)
+
+		content, err := os.ReadFile(filepath.Join(root, "hello.txt"))
+		require.NoError(t, err)
+		assert.Equal(t, "hello world", string(content))
+
+		content, err = os.ReadFile(filepath.Join(root, "data.bin"))
+		require.NoError(t, err)
+		assert.Equal(t, "binary data", string(content))
+	})
+
+	t.Run("extracts nested directory structure", func(t *testing.T) {
+		root := t.TempDir()
+
+		srcDir := filepath.Join(root, "src")
+		nestedDir := filepath.Join(srcDir, "a", "b", "c")
+		require.NoError(t, os.MkdirAll(nestedDir, 0755))
+		require.NoError(t, os.WriteFile(filepath.Join(nestedDir, "deep.txt"), []byte("deep content"), 0644))
+		require.NoError(t, os.WriteFile(filepath.Join(srcDir, "a", "shallow.txt"), []byte("shallow content"), 0644))
+
+		archivePath := filepath.Join(root, "nested.zip")
+		createZipArchive(t, srcDir, archivePath)
+		require.NoError(t, os.RemoveAll(srcDir))
+
+		file := collector.FileInfo{
+			Dir:  root,
+			Name: "nested.zip",
+			Path: archivePath,
+		}
+
+		_, err := unzip(file)
+		require.NoError(t, err)
+
+		content, err := os.ReadFile(filepath.Join(root, "a", "b", "c", "deep.txt"))
+		require.NoError(t, err)
+		assert.Equal(t, "deep content", string(content))
+
+		content, err = os.ReadFile(filepath.Join(root, "a", "shallow.txt"))
+		require.NoError(t, err)
+		assert.Equal(t, "shallow content", string(content))
+	})
+
+	t.Run("rejects path traversal entries", func(t *testing.T) {
+		root := t.TempDir()
+
+		archivePath := filepath.Join(root, "evil.zip")
+		f, err := os.Create(archivePath)
+		require.NoError(t, err)
+		zw := zip.NewWriter(f)
+		w, err := zw.Create("../escape.txt")
+		require.NoError(t, err)
+		_, err = w.Write([]byte("escaped"))
+		require.NoError(t, err)
+		require.NoError(t, zw.Close())
+		require.NoError(t, f.Close())
+
+		file := collector.FileInfo{
+			Dir:  root,
+			Name: "evil.zip",
+			Path: archivePath,
+		}
+
+		_, err = unzip(file)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "illegal entry path")
+		assert.Contains(t, err.Error(), "contains path traversal")
+	})
+
+	t.Run("returns error for non-existent archive", func(t *testing.T) {
+		root := t.TempDir()
+
+		file := collector.FileInfo{
+			Dir:  root,
+			Name: "missing.zip",
+			Path: filepath.Join(root, "missing.zip"),
+		}
+
+		_, err := unzip(file)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "failed to open archive")
+	})
+
+	t.Run("returns error for corrupt archive", func(t *testing.T) {
+		root := t.TempDir()
+
+		corruptPath := filepath.Join(root, "corrupt.zip")
+		require.NoError(t, os.WriteFile(corruptPath, []byte("this is not a zip file"), 0644))
+
+		file := collector.FileInfo{
+			Dir:  root,
+			Name: "corrupt.zip",
+			Path: corruptPath,
+		}
+
+		_, err := unzip(file)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "failed to open archive")
+	})
+
+	t.Run("empty zip archive extracts successfully", func(t *testing.T) {
+		root := t.TempDir()
+
+		archivePath := filepath.Join(root, "empty.zip")
+		f, err := os.Create(archivePath)
+		require.NoError(t, err)
+		zw := zip.NewWriter(f)
+		require.NoError(t, zw.Close())
+		require.NoError(t, f.Close())
+
+		file := collector.FileInfo{
+			Dir:  root,
+			Name: "empty.zip",
+			Path: archivePath,
+		}
+
+		_, err = unzip(file)
+		require.NoError(t, err)
+	})
+
+	t.Run("overwrites existing files", func(t *testing.T) {
+		root := t.TempDir()
+
+		srcDir := filepath.Join(root, "src")
+		require.NoError(t, os.MkdirAll(srcDir, 0755))
+		require.NoError(t, os.WriteFile(filepath.Join(srcDir, "file.txt"), []byte("new content"), 0644))
+
+		archivePath := filepath.Join(root, "overwrite.zip")
+		createZipArchive(t, srcDir, archivePath)
+		require.NoError(t, os.RemoveAll(srcDir))
+
+		require.NoError(t, os.WriteFile(filepath.Join(root, "file.txt"), []byte("old content"), 0644))
+
+		file := collector.FileInfo{
+			Dir:  root,
+			Name: "overwrite.zip",
+			Path: archivePath,
+		}
+
+		_, err := unzip(file)
+		require.NoError(t, err)
+
+		content, err := os.ReadFile(filepath.Join(root, "file.txt"))
+		require.NoError(t, err)
+		assert.Equal(t, "new content", string(content))
+	})
+
+	t.Run("does not delete archive after extraction", func(t *testing.T) {
+		root := t.TempDir()
+
+		srcDir := filepath.Join(root, "src")
+		require.NoError(t, os.MkdirAll(srcDir, 0755))
+		require.NoError(t, os.WriteFile(filepath.Join(srcDir, "keep.txt"), []byte("keep"), 0644))
+
+		archivePath := filepath.Join(root, "archive.zip")
+		createZipArchive(t, srcDir, archivePath)
+		require.NoError(t, os.RemoveAll(srcDir))
+
+		file := collector.FileInfo{
+			Dir:  root,
+			Name: "archive.zip",
+			Path: archivePath,
+		}
+
+		_, err := unzip(file)
+		require.NoError(t, err)
+
+		_, err = os.Stat(archivePath)
+		assert.NoError(t, err, "archive should still exist after extraction")
+	})
+}
+
+func TestGetRootDirectory(t *testing.T) {
+	t.Run("empty slice returns empty string", func(t *testing.T) {
+		result := getRootDirectory([]collector.FileInfo{})
+		assert.Empty(t, result)
+	})
+
+	t.Run("nil slice returns empty string", func(t *testing.T) {
+		result := getRootDirectory(nil)
+		assert.Empty(t, result)
+	})
+
+	t.Run("single file returns its directory", func(t *testing.T) {
+		files := []collector.FileInfo{
+			{Dir: "/home/user/documents"},
+		}
+		result := getRootDirectory(files)
+		assert.Equal(t, "/home/user/documents", result)
+	})
+
+	t.Run("files in same directory", func(t *testing.T) {
+		files := []collector.FileInfo{
+			{Dir: "/home/user/documents"},
+			{Dir: "/home/user/documents"},
+			{Dir: "/home/user/documents"},
+		}
+		result := getRootDirectory(files)
+		assert.Equal(t, "/home/user/documents", result)
+	})
+
+	t.Run("files in nested subdirectories", func(t *testing.T) {
+		files := []collector.FileInfo{
+			{Dir: "/home/user/documents/a"},
+			{Dir: "/home/user/documents/b"},
+			{Dir: "/home/user/documents/a/deep"},
+		}
+		result := getRootDirectory(files)
+		assert.Equal(t, "/home/user/documents", result)
+	})
+
+	t.Run("files with deeply nested common ancestor", func(t *testing.T) {
+		files := []collector.FileInfo{
+			{Dir: "/a/b/c/d/e"},
+			{Dir: "/a/b/c/x/y"},
+		}
+		result := getRootDirectory(files)
+		assert.Equal(t, "/a/b/c", result)
+	})
+
+	t.Run("files sharing only root as common ancestor", func(t *testing.T) {
+		files := []collector.FileInfo{
+			{Dir: "/foo/bar"},
+			{Dir: "/baz/qux"},
+		}
+		result := getRootDirectory(files)
+		assert.Equal(t, "/", result)
+	})
+
+	t.Run("parent and child directory", func(t *testing.T) {
+		files := []collector.FileInfo{
+			{Dir: "/home/user"},
+			{Dir: "/home/user/sub/deep"},
+		}
+		result := getRootDirectory(files)
+		assert.Equal(t, "/home/user", result)
+	})
+}
+
+func TestExtractArchivesWithProgressRecursively(t *testing.T) {
+	newProgressTracker := func() (func(string, int, int), *[]struct {
+		stage     string
+		processed int
+		total     int
+	}) {
+		var calls []struct {
+			stage     string
+			processed int
+			total     int
+		}
+		fn := func(stage string, processed, total int) {
+			calls = append(calls, struct {
+				stage     string
+				processed int
+				total     int
+			}{stage, processed, total})
+		}
+		return fn, &calls
+	}
+
+	setup := func(t *testing.T, root string, dryRun bool) (*Unzipper, []collector.FileInfo) {
+		t.Helper()
+		uz, err := New(root, dryRun)
+		require.NoError(t, err)
+		files, err := getAllFilesRecursively(root)
+		require.NoError(t, err)
+		return uz, files
+	}
+
+	t.Run("empty file list returns zero result", func(t *testing.T) {
+		uz, err := New(t.TempDir(), false)
+		require.NoError(t, err)
+
+		result, err := uz.ExtractArchivesWithProgressRecursively([]collector.FileInfo{}, nil)
+		require.NoError(t, err)
+
+		assert.Equal(t, 0, result.TotalFiles)
+		assert.Equal(t, 0, result.ArchivesFound)
+		assert.Equal(t, 0, result.ArchivesProcessed)
+		assert.Equal(t, 0, result.ExtractedArchives)
+		assert.Equal(t, 0, result.ExtractedFiles)
+		assert.Equal(t, 0, result.ExtractedDirs)
+		assert.Equal(t, 0, result.ErrorCount)
+		assert.Empty(t, result.Operations)
+	})
+
+	t.Run("no archives among plain files", func(t *testing.T) {
+		root := t.TempDir()
+		createTestFiles(t, root, 0)
+		subDir := filepath.Join(root, "subdir_0")
+		require.NoError(t, os.MkdirAll(subDir, 0755))
+		createTestFiles(t, subDir, 1)
+
+		uz, files := setup(t, root, false)
+		progress, calls := newProgressTracker()
+
+		result, err := uz.ExtractArchivesWithProgressRecursively(files, progress)
+		require.NoError(t, err)
+
+		assert.Equal(t, 0, result.ArchivesFound)
+		assert.Equal(t, 0, result.ArchivesProcessed)
+		assert.Equal(t, 0, result.ErrorCount)
+		assert.Equal(t, 0, result.ExtractedFiles)
+		_ = calls
+	})
+
+	t.Run("extracts single archive", func(t *testing.T) {
+		root := t.TempDir()
+
+		srcDir := filepath.Join(root, "archived_content")
+		require.NoError(t, os.MkdirAll(srcDir, 0755))
+		require.NoError(t, os.WriteFile(filepath.Join(srcDir, "a.txt"), []byte("aaa"), 0644))
+		require.NoError(t, os.WriteFile(filepath.Join(srcDir, "b.txt"), []byte("bbb"), 0644))
+
+		archivePath := filepath.Join(root, "test.zip")
+		createZipArchive(t, srcDir, archivePath)
+		require.NoError(t, os.RemoveAll(srcDir))
+
+		uz, files := setup(t, root, false)
+		progress, _ := newProgressTracker()
+
+		result, err := uz.ExtractArchivesWithProgressRecursively(files, progress)
+		require.NoError(t, err)
+
+		assert.GreaterOrEqual(t, result.ArchivesFound, 1)
+		assert.Equal(t, 0, result.ErrorCount)
+		assert.GreaterOrEqual(t, result.ExtractedFiles, 2, "expected at least the 2 files from the archive")
+
+		// verify extracted content exists on disk
+		content, err := os.ReadFile(filepath.Join(root, "a.txt"))
+		require.NoError(t, err)
+		assert.Equal(t, "aaa", string(content))
+
+		content, err = os.ReadFile(filepath.Join(root, "b.txt"))
+		require.NoError(t, err)
+		assert.Equal(t, "bbb", string(content))
+	})
+
+	t.Run("extracts nested archives recursively", func(t *testing.T) {
+		root := t.TempDir()
+
+		// create inner archive content
+		innerDir := filepath.Join(root, "inner_src")
+		require.NoError(t, os.MkdirAll(innerDir, 0755))
+		require.NoError(t, os.WriteFile(filepath.Join(innerDir, "deep.txt"), []byte("deep content"), 0644))
+
+		innerZipPath := filepath.Join(root, "inner.zip")
+		createZipArchive(t, innerDir, innerZipPath)
+		require.NoError(t, os.RemoveAll(innerDir))
+
+		// create outer archive containing the inner zip
+		outerDir := filepath.Join(root, "outer_src")
+		require.NoError(t, os.MkdirAll(outerDir, 0755))
+		require.NoError(t, os.WriteFile(filepath.Join(outerDir, "outer.txt"), []byte("outer content"), 0644))
+
+		// copy inner zip into outer source dir
+		innerData, err := os.ReadFile(innerZipPath)
+		require.NoError(t, err)
+		require.NoError(t, os.WriteFile(filepath.Join(outerDir, "inner.zip"), innerData, 0644))
+
+		outerZipPath := filepath.Join(root, "outer.zip")
+		createZipArchive(t, outerDir, outerZipPath)
+		require.NoError(t, os.RemoveAll(outerDir))
+		require.NoError(t, os.Remove(innerZipPath))
+
+		uz, files := setup(t, root, false)
+
+		result, err := uz.ExtractArchivesWithProgressRecursively(files, nil)
+		require.NoError(t, err)
+
+		assert.GreaterOrEqual(t, result.ArchivesFound, 1, "expected at least the outer archive")
+		assert.Equal(t, 0, result.ErrorCount)
+		// the nested archive should have been discovered and extracted too
+		assert.GreaterOrEqual(t, result.ExtractedArchives, 1)
+	})
+
+	t.Run("progress callback receives calls", func(t *testing.T) {
+		root := t.TempDir()
+
+		srcDir := filepath.Join(root, "content")
+		require.NoError(t, os.MkdirAll(srcDir, 0755))
+		require.NoError(t, os.WriteFile(filepath.Join(srcDir, "file.txt"), []byte("data"), 0644))
+
+		archivePath := filepath.Join(root, "progress_test.zip")
+		createZipArchive(t, srcDir, archivePath)
+		require.NoError(t, os.RemoveAll(srcDir))
+
+		uz, files := setup(t, root, false)
+		progress, calls := newProgressTracker()
+
+		_, err := uz.ExtractArchivesWithProgressRecursively(files, progress)
+		require.NoError(t, err)
+
+		assert.NotEmpty(t, *calls, "expected progress callback to be invoked at least once")
+	})
+
+	t.Run("nil progress callback does not panic", func(t *testing.T) {
+		root := t.TempDir()
+
+		srcDir := filepath.Join(root, "src")
+		require.NoError(t, os.MkdirAll(srcDir, 0755))
+		require.NoError(t, os.WriteFile(filepath.Join(srcDir, "x.txt"), []byte("x"), 0644))
+
+		archivePath := filepath.Join(root, "nil_progress.zip")
+		createZipArchive(t, srcDir, archivePath)
+		require.NoError(t, os.RemoveAll(srcDir))
+
+		uz, files := setup(t, root, false)
+
+		assert.NotPanics(t, func() {
+			_, err := uz.ExtractArchivesWithProgressRecursively(files, nil)
+			require.NoError(t, err)
+		})
+	})
+
+	t.Run("corrupt archive is filtered out by isArchive", func(t *testing.T) {
+		root := t.TempDir()
+
+		corruptPath := filepath.Join(root, "corrupt.zip")
+		require.NoError(t, os.WriteFile(corruptPath, []byte("this is not a zip file at all"), 0644))
+
+		// also add a valid non-archive file
+		require.NoError(t, os.WriteFile(filepath.Join(root, "normal.txt"), []byte("hello"), 0644))
+
+		uz, files := setup(t, root, false)
+
+		result, err := uz.ExtractArchivesWithProgressRecursively(files, nil)
+		require.NoError(t, err)
+		assert.Equal(t, 0, result.ArchivesFound, "corrupt zip should not pass isArchive filter")
+	})
+
+	t.Run("multiple archives at same level", func(t *testing.T) {
+		root := t.TempDir()
+
+		for i := range 3 {
+			srcDir := filepath.Join(root, fmt.Sprintf("src_%d", i))
+			require.NoError(t, os.MkdirAll(srcDir, 0755))
+			require.NoError(t, os.WriteFile(
+				filepath.Join(srcDir, fmt.Sprintf("file_%d.txt", i)),
+				[]byte(fmt.Sprintf("content_%d", i)),
+				0644,
+			))
+			createZipArchive(t, srcDir, filepath.Join(root, fmt.Sprintf("archive_%d.zip", i)))
+			require.NoError(t, os.RemoveAll(srcDir))
+		}
+
+		uz, files := setup(t, root, false)
+
+		result, err := uz.ExtractArchivesWithProgressRecursively(files, nil)
+		require.NoError(t, err)
+
+		assert.GreaterOrEqual(t, result.ArchivesFound, 3, "expected 3 archives")
+		assert.Equal(t, 0, result.ErrorCount)
+
+		// verify all extracted files exist
+		for i := range 3 {
+			content, err := os.ReadFile(filepath.Join(root, fmt.Sprintf("file_%d.txt", i)))
+			require.NoError(t, err)
+			assert.Equal(t, fmt.Sprintf("content_%d", i), string(content))
+		}
+	})
+
+	t.Run("archive in subdirectory", func(t *testing.T) {
+		root := t.TempDir()
+		subDir := filepath.Join(root, "nested", "dir")
+		require.NoError(t, os.MkdirAll(subDir, 0755))
+
+		srcDir := filepath.Join(subDir, "src")
+		require.NoError(t, os.MkdirAll(srcDir, 0755))
+		require.NoError(t, os.WriteFile(filepath.Join(srcDir, "nested_file.txt"), []byte("nested"), 0644))
+
+		createZipArchive(t, srcDir, filepath.Join(subDir, "sub_archive.zip"))
+		require.NoError(t, os.RemoveAll(srcDir))
+
+		uz, files := setup(t, root, false)
+
+		result, err := uz.ExtractArchivesWithProgressRecursively(files, nil)
+		require.NoError(t, err)
+
+		assert.GreaterOrEqual(t, result.ArchivesFound, 1)
+		assert.Equal(t, 0, result.ErrorCount)
+
+		content, err := os.ReadFile(filepath.Join(subDir, "nested_file.txt"))
+		require.NoError(t, err)
+		assert.Equal(t, "nested", string(content))
+	})
+
+	t.Run("uses full test structure with multiple levels", func(t *testing.T) {
+		root := createTestFileAndFolderStructure(t, 3)
+
+		uz, files := setup(t, root, false)
+		progress, calls := newProgressTracker()
+
+		result, err := uz.ExtractArchivesWithProgressRecursively(files, progress)
+		require.NoError(t, err)
+
+		assert.GreaterOrEqual(t, result.ArchivesFound, 1, "expected at least 1 archive from test structure")
+		assert.Equal(t, 0, result.ErrorCount, "expected no errors")
+		assert.NotEmpty(t, *calls, "expected progress to be called")
+	})
+
+	t.Run("result operations list matches archives processed", func(t *testing.T) {
+		root := t.TempDir()
+
+		srcDir := filepath.Join(root, "ops_src")
+		require.NoError(t, os.MkdirAll(srcDir, 0755))
+		require.NoError(t, os.WriteFile(filepath.Join(srcDir, "op.txt"), []byte("op"), 0644))
+
+		createZipArchive(t, srcDir, filepath.Join(root, "ops.zip"))
+		require.NoError(t, os.RemoveAll(srcDir))
+
+		uz, files := setup(t, root, false)
+
+		result, err := uz.ExtractArchivesWithProgressRecursively(files, nil)
+		require.NoError(t, err)
+
+		assert.Equal(t, len(result.Operations), result.ArchivesProcessed,
+			"operations count should match archives processed")
+	})
+
+	t.Run("empty archive extracts without error", func(t *testing.T) {
+		root := t.TempDir()
+
+		archivePath := filepath.Join(root, "empty.zip")
+		f, err := os.Create(archivePath)
+		require.NoError(t, err)
+		zw := zip.NewWriter(f)
+		require.NoError(t, zw.Close())
+		require.NoError(t, f.Close())
+
+		uz, files := setup(t, root, false)
+
+		result, err := uz.ExtractArchivesWithProgressRecursively(files, nil)
+		require.NoError(t, err)
+
+		assert.Equal(t, 0, result.ErrorCount)
+	})
+}
+
+func TestIsArchive(t *testing.T) {
+	root := t.TempDir()
+
+	zipPath := filepath.Join(root, "valid.zip")
+	createZipFile(t, zipPath)
+
+	txtPath := filepath.Join(root, "plain.txt")
+	require.NoError(t, os.WriteFile(txtPath, []byte("not a zip"), 0644))
+
+	fakeZipPath := filepath.Join(root, "fake.zip")
+	require.NoError(t, os.WriteFile(fakeZipPath, []byte("this is not a zip"), 0644))
+
+	emptyPath := filepath.Join(root, "empty.bin")
+	require.NoError(t, os.WriteFile(emptyPath, nil, 0644))
+
+	tests := []struct {
+		name string
+		path string
+		want bool
+	}{
+		{name: "valid zip archive", path: zipPath, want: true},
+		{name: "plain text file", path: txtPath, want: false},
+		{name: "fake zip extension", path: fakeZipPath, want: false},
+		{name: "empty file", path: emptyPath, want: false},
+		{name: "non-existent file", path: filepath.Join(root, "missing.zip"), want: false},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got := isArchive(tc.path)
+			assert.Equal(t, tc.want, got, "isArchive(%s) returned unexpected result", tc.path)
+		})
+	}
+}
+
+func TestFilterOnlyArchives(t *testing.T) {
+	root := t.TempDir()
+
+	zipPath := filepath.Join(root, "archive.zip")
+	createZipFile(t, zipPath)
+
+	zipPath2 := filepath.Join(root, "another.zip")
+	createZipFile(t, zipPath2)
+
+	txtPath := filepath.Join(root, "readme.txt")
+	require.NoError(t, os.WriteFile(txtPath, []byte("hello"), 0644))
+
+	imgPath := filepath.Join(root, "photo.png")
+	require.NoError(t, os.WriteFile(imgPath, []byte("not really a png"), 0644))
+
+	fakeZipPath := filepath.Join(root, "fake.zip")
+	require.NoError(t, os.WriteFile(fakeZipPath, []byte("not a zip"), 0644))
+
+	mkInfo := func(path string) collector.FileInfo {
+		info, err := os.Stat(path)
+		require.NoError(t, err)
+		return collector.FileInfo{
+			Path:    path,
+			Dir:     filepath.Dir(path),
+			Name:    filepath.Base(path),
+			Size:    info.Size(),
+			ModTime: info.ModTime(),
+		}
+	}
+
+	t.Run("mixed archives and non-archives", func(t *testing.T) {
+		input := []collector.FileInfo{
+			mkInfo(zipPath),
+			mkInfo(txtPath),
+			mkInfo(zipPath2),
+			mkInfo(imgPath),
+		}
+
+		filtered := filterOnlyArchives(input)
+		assert.Len(t, filtered, 2, "expected exactly 2 archives")
+		assert.Equal(t, "archive.zip", filtered[0].Name)
+		assert.Equal(t, "another.zip", filtered[1].Name)
+	})
+
+	t.Run("no archives in input", func(t *testing.T) {
+		input := []collector.FileInfo{
+			mkInfo(txtPath),
+			mkInfo(imgPath),
+			mkInfo(fakeZipPath),
+		}
+
+		filtered := filterOnlyArchives(input)
+		assert.Empty(t, filtered, "expected empty filtered slice")
+	})
+
+	t.Run("all archives", func(t *testing.T) {
+		input := []collector.FileInfo{
+			mkInfo(zipPath),
+			mkInfo(zipPath2),
+		}
+
+		filtered := filterOnlyArchives(input)
+		assert.Len(t, filtered, 2, "expected all entries to be archives")
+	})
+
+	t.Run("empty input", func(t *testing.T) {
+		filtered := filterOnlyArchives([]collector.FileInfo{})
+		assert.Empty(t, filtered, "expected empty filtered slice")
+	})
+
+	t.Run("nil input", func(t *testing.T) {
+		filtered := filterOnlyArchives(nil)
+		assert.Empty(t, filtered, "expected empty filtered slice")
+	})
+
+	t.Run("non-existent file in input", func(t *testing.T) {
+		input := []collector.FileInfo{
+			{
+				Path: filepath.Join(root, "missing.zip"),
+				Dir:  root,
+				Name: "missing.zip",
+				Size: 0,
+			},
+			mkInfo(zipPath),
+		}
+
+		filtered := filterOnlyArchives(input)
+		assert.Len(t, filtered, 1, "expected only the valid archive")
+		assert.Equal(t, "archive.zip", filtered[0].Name)
+	})
+}
 
 func TestGetAllFilesRecursively(t *testing.T) {
 	t.Run("traverse 1 level deep", func(t *testing.T) {
@@ -20,7 +708,7 @@ func TestGetAllFilesRecursively(t *testing.T) {
 
 		files, err := getAllFilesRecursively(root)
 		require.NoError(t, err)
-		assert.Greater(t, len(files), 0, "expected files to be returned")
+		assert.NotEmpty(t, files, "expected files to be returned")
 
 		for _, f := range files {
 			assert.True(t, filepath.IsAbs(f.Path), "expected absolute path, got %s", f.Path)
@@ -28,19 +716,19 @@ func TestGetAllFilesRecursively(t *testing.T) {
 			require.NoError(t, err)
 			assert.False(t, filepath.IsAbs(rel), "file %s escapes root", f.Path)
 			assert.NotEmpty(t, f.Name, "expected non-empty filename")
-			assert.Greater(t, f.Size, int64(0), "expected positive file size for %s", f.Path)
+			assert.Positive(t, f.Size, "expected positive file size for %s", f.Path)
 		}
 
 		assert.GreaterOrEqual(t, len(files), 31, "expected at least 30 test files + 1 archive")
 		assert.LessOrEqual(t, len(files), 51, "expected at most 50 test files + 1 archive")
 	})
-	
+
 	t.Run("traverse 5 level deep", func(t *testing.T) {
 		root := createTestFileAndFolderStructure(t, 5)
 
 		files, err := getAllFilesRecursively(root)
 		require.NoError(t, err)
-		assert.Greater(t, len(files), 0, "expected files to be returned")
+		assert.NotEmpty(t, files, "expected files to be returned")
 
 		for _, f := range files {
 			assert.True(t, filepath.IsAbs(f.Path), "expected absolute path, got %s", f.Path)
@@ -48,19 +736,19 @@ func TestGetAllFilesRecursively(t *testing.T) {
 			require.NoError(t, err)
 			assert.False(t, filepath.IsAbs(rel), "file %s escapes root", f.Path)
 			assert.NotEmpty(t, f.Name, "expected non-empty filename")
-			assert.Greater(t, f.Size, int64(0), "expected positive file size for %s", f.Path)
+			assert.Positive(t, f.Size, "expected positive file size for %s", f.Path)
 		}
 
 		assert.GreaterOrEqual(t, len(files), 5*31, "expected at least 5*(30 files + 1 archive)")
 		assert.LessOrEqual(t, len(files), 5*51, "expected at most 5*(50 files + 1 archive)")
 	})
 
-t.Run("traverse 10 level deep", func(t *testing.T) {
+	t.Run("traverse 10 level deep", func(t *testing.T) {
 		root := createTestFileAndFolderStructure(t, 10)
 
 		files, err := getAllFilesRecursively(root)
 		require.NoError(t, err)
-		assert.Greater(t, len(files), 0, "expected files to be returned")
+		assert.NotEmpty(t, files, "expected files to be returned")
 
 		for _, f := range files {
 			assert.True(t, filepath.IsAbs(f.Path), "expected absolute path, got %s", f.Path)
@@ -68,7 +756,7 @@ t.Run("traverse 10 level deep", func(t *testing.T) {
 			require.NoError(t, err)
 			assert.False(t, filepath.IsAbs(rel), "file %s escapes root", f.Path)
 			assert.NotEmpty(t, f.Name, "expected non-empty filename")
-			assert.Greater(t, f.Size, int64(0), "expected positive file size for %s", f.Path)
+			assert.Positive(t, f.Size, "expected positive file size for %s", f.Path)
 		}
 
 		assert.GreaterOrEqual(t, len(files), 10*30+10, "expected at least 10*30 test files + 10 archives")
@@ -76,11 +764,11 @@ t.Run("traverse 10 level deep", func(t *testing.T) {
 	})
 }
 
-// createTestFiles generates a specified number of test files (30-50) in the given directory
+// createTestFiles generates a specified number of test files (30-50) in the given directory.
 func createTestFiles(t *testing.T, rootPath string, level int) {
 	t.Helper()
 
-	numFiles := 30 + rand.Intn(21)
+	numFiles := 30 + rand.IntN(21) //nolint:gosec // test fixture; cryptographic randomness not needed
 	for i := range numFiles {
 		fileName := fmt.Sprintf("file_%d.txt", i)
 		filePath := filepath.Join(rootPath, fileName)
@@ -168,4 +856,22 @@ func createZipArchive(t *testing.T, sourceDir, zipPath string) {
 	})
 
 	assert.NoError(t, err, "unable to create zip archive")
+}
+
+// createZipFile creates a minimal valid zip archive at the given path.
+func createZipFile(t *testing.T, path string) {
+	t.Helper()
+
+	f, err := os.Create(path)
+	require.NoError(t, err)
+	defer f.Close()
+
+	zw := zip.NewWriter(f)
+	w, err := zw.Create("hello.txt")
+	require.NoError(t, err)
+
+	_, err = w.Write([]byte("hello"))
+	require.NoError(t, err)
+
+	require.NoError(t, zw.Close())
 }
