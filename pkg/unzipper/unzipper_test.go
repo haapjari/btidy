@@ -135,6 +135,38 @@ func TestUnzip(t *testing.T) {
 		assert.Equal(t, "ok", string(content))
 	})
 
+	t.Run("allows non utf8 filename bytes", func(t *testing.T) {
+		root := t.TempDir()
+		nonUTF8Name := "Ensimm" + string([]byte{0x84}) + "inen kirjoitus.docx"
+
+		archivePath := filepath.Join(root, "non_utf8.zip")
+		f, err := os.Create(archivePath)
+		require.NoError(t, err)
+
+		entryName := "Tiedostot/Blog/" + nonUTF8Name
+		zw := zip.NewWriter(f)
+		w, err := zw.Create(entryName)
+		require.NoError(t, err)
+		_, err = w.Write([]byte("doc content"))
+		require.NoError(t, err)
+		require.NoError(t, zw.Close())
+		require.NoError(t, f.Close())
+
+		file := collector.FileInfo{
+			Dir:  root,
+			Name: "non_utf8.zip",
+			Path: archivePath,
+		}
+
+		_, err = unzip(file)
+		require.NoError(t, err)
+
+		extractedPath := filepath.Join(root, "Tiedostot", "Blog", nonUTF8Name)
+		content, err := os.ReadFile(extractedPath)
+		require.NoError(t, err)
+		assert.Equal(t, "doc content", string(content))
+	})
+
 	t.Run("returns error for non-existent archive", func(t *testing.T) {
 		root := t.TempDir()
 
@@ -649,6 +681,11 @@ func TestValidateArchiveEntryPath(t *testing.T) {
 		{
 			name:    "valid name with double dots",
 			entry:   "Tiedostot/Suunnitelma/Isompi kuin -ohjelma..txt",
+			wantErr: false,
+		},
+		{
+			name:    "valid non utf8 bytes",
+			entry:   "Tiedostot/Blog/Ensimm" + string([]byte{0x84}) + "inen kirjoitus.docx",
 			wantErr: false,
 		},
 		{

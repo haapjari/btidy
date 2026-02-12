@@ -40,15 +40,15 @@ func printDryRunBanner() {
 
 func printCommandHeader(command, rootDir string) {
 	fmt.Printf("Command: %s\n", command)
-	fmt.Printf("Root directory: %s\n", rootDir)
+	fmt.Printf("root directory: %s\n", rootDir)
 }
 
 func printCollectingFiles() {
-	fmt.Println("Collecting files...")
+	fmt.Println("collecting files...")
 }
 
 func printFoundFiles(fileCount int, elapsed time.Duration, trailingBlankLine bool) {
-	fmt.Printf("Found %d files in %v\n", fileCount, elapsed.Round(time.Millisecond))
+	fmt.Printf("found %d files in %v\n", fileCount, elapsed.Round(time.Millisecond))
 	if trailingBlankLine {
 		fmt.Println()
 	}

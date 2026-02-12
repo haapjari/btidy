@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"io/fs"
 	"log/slog"
 	"os"
 	"path"
@@ -30,6 +29,8 @@ const (
 )
 
 var errArchiveEntryPathTraversal = errors.New("contains path traversal")
+
+var errArchiveEntryInvalidPath = errors.New("contains invalid entry path")
 
 var windowsVolumePrefixPattern = regexp.MustCompile(`^[A-Za-z]:`)
 
@@ -408,29 +409,61 @@ func hasWindowsVolumePrefix(pathName string) bool {
 
 // validateArchiveEntryPath checks that entryName is a safe, relative file path
 // suitable for extraction. It rejects absolute paths, traversal segments,
-// Windows drive-volume prefixes, and entries not representable as local paths.
-// Returns [errArchiveEntryPathTraversal] for every rejected entry.
+// Windows drive-volume prefixes, empty path elements, and NUL bytes.
+// Returns [errArchiveEntryPathTraversal] for traversal-like entries and
+// [errArchiveEntryInvalidPath] for malformed names.
 func validateArchiveEntryPath(entryName string) error {
+	// Normalize to forward-slash canonical form so all checks work uniformly
+	// regardless of the originating OS (Windows backslashes, etc.).
 	normalized := normalizeArchiveEntryPath(entryName)
 	if normalized == "" {
-		return errArchiveEntryPathTraversal
+		return errArchiveEntryInvalidPath
 	}
 
+	// Reject absolute paths and Windows drive prefixes (e.g. "C:") — extracted
+	// files must always resolve relative to the extraction directory.
 	if strings.HasPrefix(normalized, "/") || hasWindowsVolumePrefix(normalized) {
 		return errArchiveEntryPathTraversal
 	}
 
+	// NUL bytes can truncate paths at the OS level, potentially bypassing
+	// later validation checks. Reject them outright.
+	if strings.ContainsRune(normalized, '\x00') {
+		return errArchiveEntryInvalidPath
+	}
+
+	// Strip trailing slashes so directory entries (e.g. "foo/bar/") don't
+	// produce empty final segments during the per-component check below.
 	trimmed := strings.TrimRight(normalized, "/")
-	if trimmed == "" || !fs.ValidPath(trimmed) {
-		return errArchiveEntryPathTraversal
+	if trimmed == "" {
+		return errArchiveEntryInvalidPath
 	}
 
+	// Walk each path component individually to catch traversal ("..") and
+	// degenerate segments ("", ".") that could escape or confuse extraction.
+	for part := range strings.SplitSeq(trimmed, "/") {
+		switch part {
+		case "..":
+			return errArchiveEntryPathTraversal
+		case "", ".":
+			return errArchiveEntryInvalidPath
+		}
+	}
+
+	// Use path.Clean as a second line of defense: it collapses redundant
+	// separators and resolves "." / ".." sequences that might have slipped
+	// through the component-level check above.
 	cleanPath := path.Clean(trimmed)
+
+	// After cleaning, the path must still be a proper relative path — not ".",
+	// not absolute, and not a Windows volume root.
 	if cleanPath == "." || strings.HasPrefix(cleanPath, "/") || hasWindowsVolumePrefix(cleanPath) {
-		return errArchiveEntryPathTraversal
+		return errArchiveEntryInvalidPath
 	}
 
-	if _, err := filepath.Localize(cleanPath); err != nil {
+	// Final traversal guard: even after cleaning, ensure the result doesn't
+	// escape upward via ".." at the start of the resolved path.
+	if cleanPath == ".." || strings.HasPrefix(cleanPath, "../") {
 		return errArchiveEntryPathTraversal
 	}
 
