@@ -17,8 +17,6 @@ HOST_CC ?= gcc
 
 CC_linux_amd64 ?= x86_64-linux-gnu-gcc
 CC_linux_arm64 ?= aarch64-linux-gnu-gcc
-CC_darwin_amd64 ?= o64-clang
-CC_darwin_arm64 ?= oa64-clang
 CC_windows_amd64 ?= x86_64-w64-mingw32-gcc
 
 TOOLS_DIR := $(shell pwd)/.tools
@@ -46,8 +44,6 @@ DIST_DIR := dist
 RELEASE_PLATFORMS := \
 	linux/amd64 \
 	linux/arm64 \
-	darwin/amd64 \
-	darwin/arm64 \
 	windows/amd64
 
 COVERAGE_FILE := coverage.out
@@ -234,8 +230,6 @@ check-release-toolchains:
 		case "$$GOOS/$$GOARCH" in \
 			linux/amd64) CC_BIN="$(CC_linux_amd64)" ;; \
 			linux/arm64) CC_BIN="$(CC_linux_arm64)" ;; \
-			darwin/amd64) CC_BIN="$(CC_darwin_amd64)" ;; \
-			darwin/arm64) CC_BIN="$(CC_darwin_arm64)" ;; \
 			windows/amd64) CC_BIN="$(CC_windows_amd64)" ;; \
 			*) echo "error: unsupported platform $$GOOS/$$GOARCH"; exit 1 ;; \
 		esac; \
@@ -256,8 +250,6 @@ release-build: check-release-toolchains
 		case "$$GOOS/$$GOARCH" in \
 			linux/amd64) CC_BIN="$(CC_linux_amd64)" ;; \
 			linux/arm64) CC_BIN="$(CC_linux_arm64)" ;; \
-			darwin/amd64) CC_BIN="$(CC_darwin_amd64)" ;; \
-			darwin/arm64) CC_BIN="$(CC_darwin_arm64)" ;; \
 			windows/amd64) CC_BIN="$(CC_windows_amd64)" ;; \
 			*) echo "error: unsupported platform $$GOOS/$$GOARCH"; exit 1 ;; \
 		esac; \

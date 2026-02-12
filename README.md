@@ -147,11 +147,9 @@ make test-e2e
 Deflate64 support is built with CGO in all build modes.
 
 - Local build/test needs a C compiler (default: `gcc`) and standard C headers.
-- Cross-platform release build (`make release-build`) requires:
+- Release build (`make release-build`) currently targets Linux and Windows and requires:
   - `x86_64-linux-gnu-gcc` (linux/amd64)
   - `aarch64-linux-gnu-gcc` (linux/arm64)
-  - `o64-clang` (darwin/amd64)
-  - `oa64-clang` (darwin/arm64)
   - `x86_64-w64-mingw32-gcc` (windows/amd64)
 - Quick Checks:
   - `make check-cgo`
