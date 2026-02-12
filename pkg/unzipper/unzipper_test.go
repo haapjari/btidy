@@ -2,6 +2,8 @@ package unzipper
 
 import (
 	"archive/zip"
+	"bytes"
+	"encoding/binary"
 	"fmt"
 	"io"
 	"io/fs"
@@ -529,6 +531,38 @@ func TestExtractArchivesWithProgressRecursively(t *testing.T) {
 		assert.Equal(t, 0, result.ArchivesFound, "corrupt zip should not pass isArchive filter")
 	})
 
+	t.Run("archive with unsupported compression method is skipped", func(t *testing.T) {
+		root := t.TempDir()
+
+		srcDir := filepath.Join(root, "unsupported_method_src")
+		require.NoError(t, os.MkdirAll(srcDir, 0o755))
+		require.NoError(t, os.WriteFile(filepath.Join(srcDir, "method9.txt"), []byte("payload"), 0o644))
+
+		archivePath := filepath.Join(root, "unsupported_method.zip")
+		createZipArchive(t, srcDir, archivePath)
+		require.NoError(t, os.RemoveAll(srcDir))
+		setAllZipEntryMethods(t, archivePath, zipMethodDeflate64)
+
+		uz, files := setup(t, root, false)
+		result, err := uz.ExtractArchivesWithProgressRecursively(files, nil)
+		require.NoError(t, err)
+
+		require.Len(t, result.Operations, 1)
+		op := result.Operations[0]
+
+		assert.True(t, op.Skipped)
+		assert.Contains(t, op.SkipReason, "unsupported compression method")
+		assert.Contains(t, op.SkipReason, "deflate64")
+		assert.Equal(t, 1, result.SkippedCount)
+		assert.Equal(t, 0, result.ExtractedArchives)
+		assert.Equal(t, 0, result.DeletedArchives)
+
+		_, statErr := os.Stat(archivePath)
+		require.NoError(t, statErr, "unsupported archive must remain on disk")
+		_, readErr := os.Stat(filepath.Join(root, "method9.txt"))
+		require.Error(t, readErr, "entry should not be extracted when archive is skipped")
+	})
+
 	t.Run("multiple archives at same level", func(t *testing.T) {
 		root := t.TempDir()
 
@@ -998,4 +1032,38 @@ func createZipFile(t *testing.T, path string) {
 	require.NoError(t, err)
 
 	require.NoError(t, zw.Close())
+}
+
+func setAllZipEntryMethods(t *testing.T, archivePath string, method uint16) {
+	t.Helper()
+
+	data, err := os.ReadFile(archivePath)
+	require.NoError(t, err)
+
+	localSig := []byte("PK\x03\x04")
+	centralSig := []byte("PK\x01\x02")
+
+	for offset := 0; ; {
+		idx := bytes.Index(data[offset:], localSig)
+		if idx < 0 {
+			break
+		}
+		abs := offset + idx
+		require.GreaterOrEqual(t, len(data), abs+10)
+		binary.LittleEndian.PutUint16(data[abs+8:abs+10], method)
+		offset = abs + len(localSig)
+	}
+
+	for offset := 0; ; {
+		idx := bytes.Index(data[offset:], centralSig)
+		if idx < 0 {
+			break
+		}
+		abs := offset + idx
+		require.GreaterOrEqual(t, len(data), abs+12)
+		binary.LittleEndian.PutUint16(data[abs+10:abs+12], method)
+		offset = abs + len(centralSig)
+	}
+
+	require.NoError(t, os.WriteFile(archivePath, data, 0o644))
 }

@@ -19,57 +19,90 @@ import (
 )
 
 const (
-	// progressStageExtracting is the stage name reported to progress callbacks during archive extraction.
+	// progressStageExtracting is the stage name reported
+	// to progress callbacks during archive extraction.
 	progressStageExtracting = "extracting"
 
-	// maxDecompressedSize is the maximum allowed size for a single extracted file (100 GiB).
-	// This guards against zip-bomb attacks where a small archive expands to enormous size,
-	// while still allowing extraction of very large legitimate files.
+	// zipMethodDeflate64 is the compression method
+	// identifier for Deflate64 (Enhanced Deflate), which
+	// is not supported by Go's archive/zip.
+	zipMethodDeflate64 = 9
+
+	// maxDecompressedSize is the maximum allowed size for
+	// a single extracted file (100 GiB). This guards
+	// against zip-bomb attacks where a small archive
+	// expands to enormous size, while still allowing
+	// extraction of very large legitimate files.
 	maxDecompressedSize = 100 << 30
 )
 
-var errArchiveEntryPathTraversal = errors.New("contains path traversal")
+var (
+	// errArchiveEntryPathTraversal is returned when an
+	// archive entry name contains path traversal components
+	// (e.g., "../") that would escape the extraction
+	// directory.
+	errArchiveEntryPathTraversal = errors.New("contains path traversal")
 
-var errArchiveEntryInvalidPath = errors.New("contains invalid entry path")
+	// errArchiveEntryInvalidPath is returned when an archive
+	// entry name is malformed: empty, contains NUL bytes,
+	// or has degenerate path segments like "." or "".
+	errArchiveEntryInvalidPath = errors.New("contains invalid entry path")
 
-var windowsVolumePrefixPattern = regexp.MustCompile(`^[A-Za-z]:`)
+	// windowsVolumePrefixPattern matches Windows drive-volume
+	// prefixes (e.g., "C:") at the start of a path string.
+	windowsVolumePrefixPattern = regexp.MustCompile(`^[A-Za-z]:`)
+)
 
-// ExtractOperation represents a single archive extraction operation.
+// ExtractOperation represents a single archive
+// extraction operation.
 type ExtractOperation struct {
-	// ArchivePath is the absolute path to the archive file being extracted.
+	// ArchivePath is the absolute path to the archive
+	// file being extracted.
 	ArchivePath string
 
-	// ExtractedFiles is the count of regular files successfully extracted from this archive.
+	// ExtractedFiles is the count of regular files
+	// successfully extracted from this archive.
 	ExtractedFiles int
 
-	// ExtractedDirs is the count of directories created during extraction.
+	// ExtractedDirs is the count of directories created
+	// during extraction.
 	ExtractedDirs int
 
-	// SkippedEntries is the count of archive entries that were skipped (e.g., existing files in non-overwrite mode).
+	// SkippedEntries is the count of archive entries that
+	// were skipped (e.g., existing files in non-overwrite
+	// mode).
 	SkippedEntries int
 
-	// EntryErrors contains error messages for individual entries that failed during extraction.
+	// EntryErrors contains error messages for individual
+	// entries that failed during extraction.
 	EntryErrors []string
 
-	// NestedArchives is the count of archive files discovered within this archive during extraction.
+	// NestedArchives is the count of archive files
+	// discovered within this archive during extraction.
 	NestedArchives int
 
-	// ExtractionComplete indicates whether the archive was fully extracted without fatal errors.
+	// ExtractionComplete indicates whether the archive
+	// was fully extracted without fatal errors.
 	ExtractionComplete bool
 
-	// DeletedArchive indicates whether the source archive was deleted after successful extraction.
+	// DeletedArchive indicates whether the source archive
+	// was deleted after successful extraction.
 	DeletedArchive bool
 
-	// TrashedTo is the trash location path if the archive was soft-deleted (moved to trash).
+	// TrashedTo is the trash location path if the archive
+	// was soft-deleted (moved to trash).
 	TrashedTo string
 
-	// Skipped indicates whether this archive was skipped entirely without attempting extraction.
+	// Skipped indicates whether this archive was skipped
+	// entirely without attempting extraction.
 	Skipped bool
 
-	// SkipReason contains the explanation when Skipped is true (e.g., "not a zip file", "path escape").
+	// SkipReason contains the explanation when Skipped is
+	// true (e.g., "not a zip file", "path escape").
 	SkipReason string
 
-	// Error contains any fatal error that prevented extraction or archive deletion.
+	// Error contains any fatal error that prevented
+	// extraction or archive deletion.
 	Error error
 }
 
@@ -283,6 +316,12 @@ func (u *Unzipper) extractBatch(
 			return err
 		}
 
+		if op.Skipped {
+			res.SkippedCount++
+			res.Operations = append(res.Operations, op)
+			continue
+		}
+
 		res.ExtractedArchives++
 		res.ExtractedFiles += op.ExtractedFiles
 		res.ExtractedDirs += op.ExtractedDirs
@@ -320,6 +359,13 @@ func (u *Unzipper) processArchive(archive collector.FileInfo, archivePath string
 	}
 
 	if err != nil {
+		if errors.Is(err, zip.ErrAlgorithm) {
+			op.Skipped = true
+			op.SkipReason = err.Error()
+			op.Error = nil
+			return op, nil
+		}
+
 		return op, err
 	}
 
@@ -535,6 +581,11 @@ func unzipWithValidator(file collector.FileInfo, validator *safepath.Validator) 
 		_ = r.Close()
 	}()
 
+	if methodErr := validateCompressionMethods(r.files); methodErr != nil {
+		op.Error = methodErr
+		return op, op.Error
+	}
+
 	for _, entry := range r.files {
 		targetPath, pathErr := resolveArchiveEntryPath(file.Dir, entry.Name, validator)
 		if pathErr != nil {
@@ -594,6 +645,11 @@ func inspectArchiveWithValidator(file collector.FileInfo, validator *safepath.Va
 		_ = r.Close()
 	}()
 
+	if methodErr := validateCompressionMethods(r.files); methodErr != nil {
+		op.Error = methodErr
+		return op, op.Error
+	}
+
 	for _, entry := range r.files {
 		if _, pathErr := resolveArchiveEntryPath(file.Dir, entry.Name, validator); pathErr != nil {
 			op.Error = fmt.Errorf("illegal entry path %q: %w", entry.Name, pathErr)
@@ -637,6 +693,55 @@ func extractFile(entry *zip.File, targetPath string) error {
 	}
 
 	return outFile.Close()
+}
+
+// validateCompressionMethods checks that all non-directory entries in the archive
+// use a supported compression method (Store or Deflate). It returns an error
+// wrapping [zip.ErrAlgorithm] for the first entry that uses an unsupported method,
+// or nil if all entries are compatible.
+func validateCompressionMethods(entries []*zip.File) error {
+	for _, entry := range entries {
+		if entry.FileInfo().IsDir() {
+			continue
+		}
+
+		if isCompressionMethodSupported(entry.Method) {
+			continue
+		}
+
+		return fmt.Errorf(
+			"entry %q uses unsupported compression method %d (%s): %w",
+			entry.Name,
+			entry.Method,
+			compressionMethodName(entry.Method),
+			zip.ErrAlgorithm,
+		)
+	}
+
+	return nil
+}
+
+// isCompressionMethodSupported reports whether method is a zip compression
+// algorithm that this package can extract. Currently only [zip.Store]
+// (uncompressed) and [zip.Deflate] are supported.
+func isCompressionMethodSupported(method uint16) bool {
+	return method == zip.Store || method == zip.Deflate
+}
+
+// compressionMethodName returns a human-readable name for a zip compression
+// method code. Known methods include "store" (0), "deflate" (8), and
+// "deflate64" (9). Unrecognized method codes return "unknown".
+func compressionMethodName(method uint16) string {
+	switch method {
+	case zip.Store:
+		return "store"
+	case zip.Deflate:
+		return "deflate"
+	case zipMethodDeflate64:
+		return "deflate64"
+	default:
+		return "unknown"
+	}
 }
 
 // isArchive reports whether filePath is a valid zip archive by attempting to

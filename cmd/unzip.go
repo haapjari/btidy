@@ -65,7 +65,7 @@ func runUnzip(_ *cobra.Command, args []string) error {
 	}
 
 	printDetailedOperations(result.Operations, printUnzipOperation, func(op unzipper.ExtractOperation) bool {
-		return op.Error != nil || op.SkippedEntries > 0
+		return op.Error != nil || op.Skipped || op.SkippedEntries > 0
 	})
 
 	printSummary(
@@ -73,6 +73,7 @@ func runUnzip(_ *cobra.Command, args []string) error {
 		fmt.Sprintf("Archives Found:     %d", result.ArchivesFound),
 		fmt.Sprintf("Archives Processed: %d", result.ArchivesProcessed),
 		fmt.Sprintf("Archives Extracted: %d", result.ExtractedArchives),
+		fmt.Sprintf("Archives Skipped:   %d", result.SkippedCount),
 		fmt.Sprintf("Archives Deleted:   %d", result.DeletedArchives),
 		fmt.Sprintf("Files Extracted:    %d", result.ExtractedFiles),
 		fmt.Sprintf("Dir Entries:        %d", result.ExtractedDirs),
