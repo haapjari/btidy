@@ -526,7 +526,7 @@ func unzipWithValidator(file collector.FileInfo, validator *safepath.Validator) 
 	archivePath := filepath.Join(file.Dir, file.Name)
 	op := ExtractOperation{ArchivePath: archivePath}
 
-	r, err := zip.OpenReader(archivePath)
+	r, err := openArchiveReader(archivePath)
 	if err != nil {
 		op.Error = fmt.Errorf("failed to open archive %s: %w", archivePath, err)
 		return op, op.Error
@@ -535,7 +535,7 @@ func unzipWithValidator(file collector.FileInfo, validator *safepath.Validator) 
 		_ = r.Close()
 	}()
 
-	for _, entry := range r.File {
+	for _, entry := range r.files {
 		targetPath, pathErr := resolveArchiveEntryPath(file.Dir, entry.Name, validator)
 		if pathErr != nil {
 			op.Error = fmt.Errorf("illegal entry path %q: %w", entry.Name, pathErr)
@@ -585,7 +585,7 @@ func inspectArchiveWithValidator(file collector.FileInfo, validator *safepath.Va
 	archivePath := filepath.Join(file.Dir, file.Name)
 	op := ExtractOperation{ArchivePath: archivePath}
 
-	r, err := zip.OpenReader(archivePath)
+	r, err := openArchiveReader(archivePath)
 	if err != nil {
 		op.Error = fmt.Errorf("failed to open archive %s: %w", archivePath, err)
 		return op, op.Error
@@ -594,7 +594,7 @@ func inspectArchiveWithValidator(file collector.FileInfo, validator *safepath.Va
 		_ = r.Close()
 	}()
 
-	for _, entry := range r.File {
+	for _, entry := range r.files {
 		if _, pathErr := resolveArchiveEntryPath(file.Dir, entry.Name, validator); pathErr != nil {
 			op.Error = fmt.Errorf("illegal entry path %q: %w", entry.Name, pathErr)
 			return op, op.Error
@@ -645,9 +645,9 @@ func extractFile(entry *zip.File, targetPath string) error {
 // return is reserved for unexpected I/O failures; a file that simply isn't a
 // zip archive is not treated as an error.
 func isArchive(filePath string) bool {
-	r, err := zip.OpenReader(filePath)
+	r, err := openArchiveReader(filePath)
 	if err != nil {
-		slog.Info("skipped a file: ", "skip", err.Error())
+		slog.Debug("skipped a file", "path", filePath, "error", err)
 		return false
 	}
 	_ = r.Close()
