@@ -1,10 +1,10 @@
 # btidy
 
-Tool to tame messy backup directories, recursively extract archives, deduplicate files by content hash, and organize what's left. Every destructive operation is reversible through soft-delete, journaling, and undo.
+- Tool to recursively detect and remove duplicate files in a given path.
 
 ## The Problem
 
-Years of backups tend to accumulate into a mess. You back up a folder, then later back up the same folder again — this time the previous backup archive is inside it. Repeat a few times and you end up with something like:
+- I had years of backups, that accumulated into huge blob of data. Blob included archives and archives, and I had multiple instances of same piece of data multiple times.
 
 ```
 backup-2024/
@@ -17,20 +17,16 @@ backup-2024/
         notes.zip
 ```
 
-Archives within archives within archives, four or five levels deep, full of duplicate files with inconsistent names. Manually untangling this is tedious and error-prone.
-
-btidy solves this in one pipeline: recursively extract every archive (no matter how deeply nested), deduplicate by content hash, normalize filenames, and organize by type. Every step is reversible.
-
 ## Overview
 
-- **Unzip** extracts .zip files recursively in the directory, in place and removes archives on success.
-- **Rename** applies a timestamped, sanitized filename in the same directory.
-- **Flatten** moves files to root and removes content duplicates safely.
-- **Organize** groups files into subdirectories by file extension.
-- **Duplicate** removes duplicate content by hash across the tree.
-- **Manifest** writes a cryptographic inventory for before/after verification.
-- **Undo** reverses the most recent operation using its journal (restores trashed files, reverses renames).
-- **Purge** permanently deletes trashed files from `.btidy/trash/`. This is the only irrecoverable command.
+- Unzip: extracts .zip files recursively in the directory, in place and removes archives on success.
+- Rename: applies a timestamped, sanitized filename in the same directory.
+- Flatten: moves files to root and removes content duplicates safely.
+- Organize: groups files into subdirectories by file extension.
+- Duplicate: removes duplicate content by hash across the tree.
+- Manifest: writes a cryptographic inventory for before and after verification.
+- Undo: reverses the most recent operation using its journal (restores trashed files, reverses renames).
+- Purge: permanently deletes trashed files from `.btidy/trash/`. This is the only irrecoverable command.
 
 ## Examples
 
@@ -110,20 +106,16 @@ make build
 
 ## Safety
 
-btidy is designed around a zero data loss guarantee:
-
-- **Path containment**: All reads and mutations are contained within the target directory. Symlinks that resolve outside the target are rejected.
-- **Soft-delete via trash**: Files are never permanently deleted. They are moved to `.btidy/trash/<run-id>/` preserving relative paths. Only `purge --force` permanently deletes.
-- **Operation journal**: Every mutation is logged to `.btidy/journal/<run-id>.jsonl` with write-ahead entries (intent written before action, confirmation after). Enables undo and crash detection.
-- **Pre-operation manifest snapshots**: An automatic manifest snapshot is saved to `.btidy/manifests/` before each non-dry-run mutating operation (disable with `--no-snapshot`).
-- **Advisory file locking**: `.btidy/lock` prevents concurrent btidy processes on the same directory.
-- **Pre-delete content verification**: Files are re-hashed before deletion to verify content hasn't changed since the operation started.
-- **Unzipper overwrite protection**: Extraction skips files that already exist at the target path.
-- **Undo with hash verification**: `btidy undo` verifies content hashes before restoring trashed files, skipping any that have been modified.
+- Path Containment: All reads and mutations are contained within the target directory. Symlinks that resolve outside the target are rejected.
+- Soft-Delete: Files are never permanently deleted. They are moved to `.btidy/trash/<run-id>/` preserving relative paths. Only `purge --force` permanently deletes.
+- Operation Journal: Every mutation is logged to `.btidy/journal/<run-id>.jsonl` with write-ahead entries (intent written before action, confirmation after). Enables undo and crash detection.
+- Pre-Operation Manifest Snapshots: An automatic manifest snapshot is saved to `.btidy/manifests/` before each non-dry-run mutating operation (disable with `--no-snapshot`).
+- Advisory File Locking: `.btidy/lock` prevents concurrent btidy processes on the same directory.
+- Pre-delete content verification: Files are re-hashed before deletion to verify content hasn't changed since the operation started.
+- Unzipper Overwrite Safety: Existing target files are moved to trash before extraction overwrites them.
+- Undo, with Hash Verification: `btidy undo` verifies content hashes before restoring trashed files, skipping any that have been modified.
 
 ## `.btidy/` Metadata Directory
-
-All btidy metadata lives in a `.btidy/` directory inside the target:
 
 ```
 .btidy/
@@ -134,8 +126,6 @@ All btidy metadata lives in a `.btidy/` directory inside the target:
   journal/<run-id>.rolled-back.jsonl    # Journals after successful undo
 ```
 
-The `.btidy/` directory and its contents are automatically excluded from all btidy operations (collection, hashing, organizing, etc.).
-
 ## Tests
 
 ```bash
@@ -144,6 +134,29 @@ make test-e2e
 ./scripts/e2e.sh
 ```
 
-# License
+## Third-Party
+
+- deflate64 ZIP decompression support uses zlib contrib/infback9 from https://github.com/madler/zlib
+- Upstream Tag: `v1.3.1`
+- LICENSE: zlib License
+- Notices: `THIRD_PARTY_NOTICES.md`
+- Integrity Check: `make verify-third-party`
+
+## CGO Toolchain Requirements
+
+Deflate64 support is built with CGO in all build modes.
+
+- Local build/test needs a C compiler (default: `gcc`) and standard C headers.
+- Cross-platform release build (`make release-build`) requires:
+  - `x86_64-linux-gnu-gcc` (linux/amd64)
+  - `aarch64-linux-gnu-gcc` (linux/arm64)
+  - `o64-clang` (darwin/amd64)
+  - `oa64-clang` (darwin/arm64)
+  - `x86_64-w64-mingw32-gcc` (windows/amd64)
+- Quick Checks:
+  - `make check-cgo`
+  - `make check-release-toolchains`
+
+# LICENSE
 
 MIT

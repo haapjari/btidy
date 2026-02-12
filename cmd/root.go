@@ -67,6 +67,11 @@ Safety:
   Every mutation is journaled to .btidy/journal/ for undo support.
   A manifest snapshot is saved to .btidy/manifests/ before each operation.
   Advisory file locking prevents concurrent btidy processes.
+
+Third Party:
+  Deflate64 support uses zlib contrib/infback9 from https://github.com/madler/zlib (zlib License).
+  Full notices: see THIRD_PARTY_NOTICES.md in the project root.
+
   The tool will NEVER modify files outside the specified directory.`,
 	}
 

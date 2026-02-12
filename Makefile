@@ -1,4 +1,4 @@
-.PHONY: all build test test-race test-cover test-e2e clean lint fmt vet vulncheck check verify pre-commit tools help release release-build docs docs-d2 docs-deps
+.PHONY: all build test test-race test-cover test-e2e clean lint fmt vet vulncheck check verify pre-commit tools help release release-build docs docs-d2 docs-deps check-cgo check-release-toolchains verify-third-party
 
 # ============================================================================
 # VARIABLES
@@ -11,6 +11,15 @@ GOBUILD := $(GO) build
 GOCLEAN := $(GO) clean
 GOVET := $(GO) vet
 GOFMT := gofmt
+
+CGO_ENABLED := 1
+HOST_CC ?= gcc
+
+CC_linux_amd64 ?= x86_64-linux-gnu-gcc
+CC_linux_arm64 ?= aarch64-linux-gnu-gcc
+CC_darwin_amd64 ?= o64-clang
+CC_darwin_arm64 ?= oa64-clang
+CC_windows_amd64 ?= x86_64-w64-mingw32-gcc
 
 TOOLS_DIR := $(shell pwd)/.tools
 GOLANGCI_LINT := $(TOOLS_DIR)/golangci-lint
@@ -69,33 +78,43 @@ help:
 	@echo "  docs          - Render D2 diagrams and dependency graph to docs/*.svg"
 	@echo "  docs-d2       - Render D2 diagrams only (requires d2, install via make tools)"
 	@echo "  docs-deps     - Render auto-generated dependency graph only (requires graphviz: apt install graphviz)"
+	@echo "  check-cgo     - Verify local C compiler for CGO builds"
+	@echo "  check-release-toolchains - Verify cross-compilers required by release-build"
+	@echo "  verify-third-party - Verify vendored zlib files match upstream"
 	@echo "  clean         - Clean build artifacts and tools"
 	@echo "  release       - Tag, push, and create GitHub release with binaries"
-	@echo "  release-build - Cross-compile release binaries to dist/"
+	@echo "  release-build - Cross-compile CGO-enabled release binaries to dist/"
 
 # ============================================================================
 # BUILD
 # ============================================================================
 
-build:
+check-cgo:
+	@command -v $(HOST_CC) >/dev/null 2>&1 || { \
+		echo "error: required C compiler '$(HOST_CC)' not found (CGO is mandatory)"; \
+		echo "hint: install build-essential (Debian/Ubuntu) or Xcode CLT (macOS)"; \
+		exit 1; \
+	}
+
+build: check-cgo
 	@echo "Building $(BINARY)..."
-	$(GOBUILD) $(LDFLAGS) -o $(BINARY) $(CMD_DIR)
+	CGO_ENABLED=$(CGO_ENABLED) $(GOBUILD) $(LDFLAGS) -o $(BINARY) $(CMD_DIR)
 
 # ============================================================================
 # TEST
 # ============================================================================
 
-test: $(GOTESTSUM)
+test: check-cgo $(GOTESTSUM)
 	@echo "Running tests..."
-	$(GOTESTSUM) --format pkgname -- -count=1 -cover $(PKG_DIR)
+	CGO_ENABLED=$(CGO_ENABLED) $(GOTESTSUM) --format pkgname -- -count=1 -cover $(PKG_DIR)
 
-test-race: $(GOTESTSUM)
+test-race: check-cgo $(GOTESTSUM)
 	@echo "Running tests with race detector..."
-	$(GOTESTSUM) --format pkgname -- -race -count=1 -cover $(PKG_DIR)
+	CGO_ENABLED=$(CGO_ENABLED) $(GOTESTSUM) --format pkgname -- -race -count=1 -cover $(PKG_DIR)
 
-test-cover: $(GOTESTSUM)
+test-cover: check-cgo $(GOTESTSUM)
 	@echo "Running tests with coverage report..."
-	$(GOTESTSUM) --format pkgname -- -race -count=1 -coverprofile=$(COVERAGE_FILE) -covermode=atomic $(PKG_DIR)
+	CGO_ENABLED=$(CGO_ENABLED) $(GOTESTSUM) --format pkgname -- -race -count=1 -coverprofile=$(COVERAGE_FILE) -covermode=atomic $(PKG_DIR)
 	@echo ""
 	@echo "Coverage by function:"
 	@$(GO) tool cover -func=$(COVERAGE_FILE)
@@ -103,9 +122,9 @@ test-cover: $(GOTESTSUM)
 	@echo ""
 	@echo "HTML report: $(COVERAGE_HTML)"
 
-test-e2e:
+test-e2e: check-cgo
 	@echo "Running end-to-end tests..."
-	$(GO) test ./e2e -v -count=1
+	CGO_ENABLED=$(CGO_ENABLED) $(GO) test ./e2e -v -count=1
 
 # ============================================================================
 # LINT & FORMAT
@@ -120,9 +139,9 @@ fmt: $(GOIMPORTS)
 	$(GOFMT) -w -s $(ALL_GO_FILES)
 	$(GOIMPORTS) -w -local btidy $(ALL_GO_FILES)
 
-vet:
+vet: check-cgo
 	@echo "Running go vet..."
-	$(GOVET) $(PKG_DIR)
+	CGO_ENABLED=$(CGO_ENABLED) $(GOVET) $(PKG_DIR)
 
 vulncheck: $(GOVULNCHECK)
 	@echo "Running govulncheck..."
@@ -188,6 +207,10 @@ docs-deps: ## Render auto-generated dependency graph only
 	@echo "Generating dependency graph..."
 	@scripts/depgraph.sh docs/deps.svg
 
+verify-third-party:
+	@echo "Verifying vendored zlib files against upstream tag..."
+	@$(GO) run ./scripts/verify_zlib_vendor.go
+
 # ============================================================================
 # CLEAN
 # ============================================================================
@@ -203,17 +226,45 @@ clean:
 # RELEASE
 # ============================================================================
 
-release-build:
+check-release-toolchains:
+	@missing=0; \
+	for platform in $(RELEASE_PLATFORMS); do \
+		GOOS=$${platform%/*}; \
+		GOARCH=$${platform#*/}; \
+		case "$$GOOS/$$GOARCH" in \
+			linux/amd64) CC_BIN="$(CC_linux_amd64)" ;; \
+			linux/arm64) CC_BIN="$(CC_linux_arm64)" ;; \
+			darwin/amd64) CC_BIN="$(CC_darwin_amd64)" ;; \
+			darwin/arm64) CC_BIN="$(CC_darwin_arm64)" ;; \
+			windows/amd64) CC_BIN="$(CC_windows_amd64)" ;; \
+			*) echo "error: unsupported platform $$GOOS/$$GOARCH"; exit 1 ;; \
+		esac; \
+		if ! command -v "$$CC_BIN" >/dev/null 2>&1; then \
+			echo "error: required cross-compiler '$$CC_BIN' not found for $$GOOS/$$GOARCH"; \
+			missing=1; \
+		fi; \
+	done; \
+	if [ $$missing -ne 0 ]; then exit 1; fi
+
+release-build: check-release-toolchains
 	@echo "building release binaries v$(CURRENT_VERSION)..."
 	@rm -rf $(DIST_DIR)
 	@mkdir -p $(DIST_DIR)
 	@for platform in $(RELEASE_PLATFORMS); do \
 		GOOS=$${platform%/*}; \
 		GOARCH=$${platform#*/}; \
+		case "$$GOOS/$$GOARCH" in \
+			linux/amd64) CC_BIN="$(CC_linux_amd64)" ;; \
+			linux/arm64) CC_BIN="$(CC_linux_arm64)" ;; \
+			darwin/amd64) CC_BIN="$(CC_darwin_amd64)" ;; \
+			darwin/arm64) CC_BIN="$(CC_darwin_arm64)" ;; \
+			windows/amd64) CC_BIN="$(CC_windows_amd64)" ;; \
+			*) echo "error: unsupported platform $$GOOS/$$GOARCH"; exit 1 ;; \
+		esac; \
 		output="$(DIST_DIR)/$(BINARY)-$${GOOS}-$${GOARCH}"; \
 		if [ "$$GOOS" = "windows" ]; then output="$${output}.exe"; fi; \
-		echo "  $$GOOS/$$GOARCH -> $$output"; \
-		GOOS=$$GOOS GOARCH=$$GOARCH $(GOBUILD) $(LDFLAGS) -o "$$output" $(CMD_DIR) || exit 1; \
+		echo "  $$GOOS/$$GOARCH (CC=$$CC_BIN) -> $$output"; \
+		CGO_ENABLED=1 CC=$$CC_BIN GOOS=$$GOOS GOARCH=$$GOARCH $(GOBUILD) $(LDFLAGS) -o "$$output" $(CMD_DIR) || exit 1; \
 	done
 	@echo "binaries written to $(DIST_DIR)/"
 

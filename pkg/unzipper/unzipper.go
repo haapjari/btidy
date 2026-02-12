@@ -14,6 +14,8 @@ import (
 	"strings"
 
 	"btidy/pkg/collector"
+	"btidy/pkg/deflate64"
+	"btidy/pkg/hasher"
 	"btidy/pkg/safepath"
 	"btidy/pkg/trash"
 )
@@ -22,11 +24,6 @@ const (
 	// progressStageExtracting is the stage name reported
 	// to progress callbacks during archive extraction.
 	progressStageExtracting = "extracting"
-
-	// zipMethodDeflate64 is the compression method
-	// identifier for Deflate64 (Enhanced Deflate), which
-	// is not supported by Go's archive/zip.
-	zipMethodDeflate64 = 9
 
 	// maxDecompressedSize is the maximum allowed size for
 	// a single extracted file (100 GiB). This guards
@@ -69,8 +66,7 @@ type ExtractOperation struct {
 	ExtractedDirs int
 
 	// SkippedEntries is the count of archive entries that
-	// were skipped (e.g., existing files in non-overwrite
-	// mode).
+	// were skipped.
 	SkippedEntries int
 
 	// EntryErrors contains error messages for individual
@@ -104,6 +100,18 @@ type ExtractOperation struct {
 	// Error contains any fatal error that prevented
 	// extraction or archive deletion.
 	Error error
+
+	// ReplacedFiles contains files that existed before extraction and were moved
+	// to trash to prevent overwrite data loss.
+	ReplacedFiles []ReplacedFile
+}
+
+// ReplacedFile describes one pre-existing file that was moved to trash before
+// an archive entry overwrote its original path.
+type ReplacedFile struct {
+	OriginalPath string
+	TrashedTo    string
+	Hash         string
 }
 
 // Result contains the aggregated statistics and outcomes from an unzip operation.
@@ -215,6 +223,10 @@ func NewWithValidator(
 ) (*Unzipper, error) {
 	if validator == nil {
 		return nil, errors.New("validator is required")
+	}
+
+	if err := registerDeflate64Support(); err != nil {
+		return nil, err
 	}
 
 	return &Unzipper{
@@ -355,7 +367,7 @@ func (u *Unzipper) processArchive(archive collector.FileInfo, archivePath string
 	if u.dryRun {
 		op, err = inspectArchiveWithValidator(archive, u.validator)
 	} else {
-		op, err = unzipWithValidator(archive, u.validator)
+		op, err = unzipWithValidator(archive, u.validator, u.trasher)
 	}
 
 	if err != nil {
@@ -551,7 +563,7 @@ func resolveArchiveEntryPath(
 // attacks. Returns an ExtractOperation describing what was extracted and any
 // error encountered.
 func unzip(file collector.FileInfo) (ExtractOperation, error) {
-	return unzipWithValidator(file, nil)
+	return unzipWithValidator(file, nil, nil)
 }
 
 // unzipWithValidator extracts all entries from the zip archive identified by file
@@ -568,7 +580,15 @@ func unzip(file collector.FileInfo) (ExtractOperation, error) {
 //
 // Extraction stops on the first error encountered and returns both the partial
 // operation result and the error.
-func unzipWithValidator(file collector.FileInfo, validator *safepath.Validator) (ExtractOperation, error) {
+func unzipWithValidator(
+	file collector.FileInfo,
+	validator *safepath.Validator,
+	trasher *trash.Trasher,
+) (ExtractOperation, error) {
+	if err := registerDeflate64Support(); err != nil {
+		return ExtractOperation{}, err
+	}
+
 	archivePath := filepath.Join(file.Dir, file.Name)
 	op := ExtractOperation{ArchivePath: archivePath}
 
@@ -587,40 +607,117 @@ func unzipWithValidator(file collector.FileInfo, validator *safepath.Validator) 
 	}
 
 	for _, entry := range r.files {
-		targetPath, pathErr := resolveArchiveEntryPath(file.Dir, entry.Name, validator)
-		if pathErr != nil {
-			op.Error = fmt.Errorf("illegal entry path %q: %w", entry.Name, pathErr)
+		if entryErr := extractArchiveEntry(file, entry, validator, trasher, &op); entryErr != nil {
+			op.Error = entryErr
 			return op, op.Error
-		}
-
-		if entry.FileInfo().IsDir() {
-			if mkErr := os.MkdirAll(targetPath, entry.Mode().Perm()|0o755); mkErr != nil {
-				op.Error = fmt.Errorf("failed to create directory %s: %w", targetPath, mkErr)
-				return op, op.Error
-			}
-			op.ExtractedDirs++
-			continue
-		}
-
-		parentDir := filepath.Dir(targetPath)
-		if mkErr := os.MkdirAll(parentDir, 0o755); mkErr != nil {
-			op.Error = fmt.Errorf("failed to create parent directory %s: %w", parentDir, mkErr)
-			return op, op.Error
-		}
-
-		if writeErr := extractFile(entry, targetPath); writeErr != nil {
-			op.Error = fmt.Errorf("failed to extract %s: %w", entry.Name, writeErr)
-			return op, op.Error
-		}
-		op.ExtractedFiles++
-
-		if isArchive(targetPath) {
-			op.NestedArchives++
 		}
 	}
 
 	op.ExtractionComplete = true
 	return op, nil
+}
+
+// extractArchiveEntry extracts a single zip entry into the directory containing
+// the source archive. For directory entries, it creates the target directory with
+// the archived permission bits (ORed with 0o755). For regular files, it ensures
+// the parent directory exists, backs up any pre-existing file at the target path
+// to trash (when a [trash.Trasher] is configured), and writes the entry content
+// via [extractFile]. Extracted files that are themselves recognized archive
+// formats increment op.NestedArchives for later recursive processing.
+//
+// All resolved paths are validated through the provided [safepath.Validator] to
+// prevent path traversal and symlink escape attacks. Returns an error on the
+// first failure; the caller receives partial statistics in op.
+func extractArchiveEntry(
+	file collector.FileInfo,
+	entry *zip.File,
+	validator *safepath.Validator,
+	trasher *trash.Trasher,
+	op *ExtractOperation,
+) error {
+	// Resolve the archive entry name to a safe absolute path under the archive's
+	// parent directory, validating against path traversal and symlink escapes.
+	targetPath, pathErr := resolveArchiveEntryPath(file.Dir, entry.Name, validator)
+	if pathErr != nil {
+		return fmt.Errorf("illegal entry path %q: %w", entry.Name, pathErr)
+	}
+
+	// If the entry is a directory, create it with the archived permissions
+	// (ensuring at least rwxr-xr-x via OR with 0o755) and return early.
+	if entry.FileInfo().IsDir() {
+		if mkErr := os.MkdirAll(targetPath, entry.Mode().Perm()|0o755); mkErr != nil {
+			return fmt.Errorf("failed to create directory %s: %w", targetPath, mkErr)
+		}
+		op.ExtractedDirs++
+		return nil
+	}
+
+	// For regular files, ensure the parent directory exists before writing.
+	parentDir := filepath.Dir(targetPath)
+	if mkErr := os.MkdirAll(parentDir, 0o755); mkErr != nil {
+		return fmt.Errorf("failed to create parent directory %s: %w", parentDir, mkErr)
+	}
+
+	// If a file already exists at the target path and a trasher is configured,
+	// move the existing file to trash so it can be recovered via undo.
+	replaced, replacedFile, replaceErr := backupExistingFile(targetPath, trasher)
+	if replaceErr != nil {
+		return fmt.Errorf("failed to backup existing target %s: %w", targetPath, replaceErr)
+	}
+	// Track any replaced file in the operation result for journaling/undo support.
+	if replaced {
+		op.ReplacedFiles = append(op.ReplacedFiles, replacedFile)
+	}
+
+	// Decompress and write the archive entry contents to the target path.
+	if writeErr := extractFile(entry, targetPath); writeErr != nil {
+		return fmt.Errorf("failed to extract %s: %w", entry.Name, writeErr)
+	}
+	op.ExtractedFiles++
+
+	// Check if the newly extracted file is itself an archive, so the caller
+	// can schedule it for recursive extraction in a subsequent pass.
+	if isArchive(targetPath) {
+		op.NestedArchives++
+	}
+
+	return nil
+}
+
+// backupExistingFile moves an existing extraction target to trash before
+// overwrite so the original bytes are recoverable.
+func backupExistingFile(targetPath string, trasher *trash.Trasher) (bool, ReplacedFile, error) {
+	if trasher == nil {
+		return false, ReplacedFile{}, nil
+	}
+
+	info, err := os.Lstat(targetPath)
+	if errors.Is(err, os.ErrNotExist) {
+		return false, ReplacedFile{}, nil
+	}
+	if err != nil {
+		return false, ReplacedFile{}, err
+	}
+	if info.IsDir() {
+		return false, ReplacedFile{}, errors.New("target exists as directory")
+	}
+
+	h := hasher.New()
+	originalHash, err := h.ComputeHash(targetPath)
+	if err != nil {
+		return false, ReplacedFile{}, fmt.Errorf("hash existing target: %w", err)
+	}
+
+	trashedTo, err := trasher.TrashWithDest(targetPath)
+	if err != nil {
+		return false, ReplacedFile{}, err
+	}
+
+	return true, ReplacedFile{
+		OriginalPath: targetPath,
+		TrashedTo:    trashedTo,
+		Hash:         originalHash,
+	}, nil
 }
 
 // inspectArchiveWithValidator performs a dry-run inspection of the zip archive
@@ -633,6 +730,10 @@ func unzipWithValidator(file collector.FileInfo, validator *safepath.Validator) 
 // returning both the partial operation result and the error. This is used in
 // dry-run mode to preview what an extraction would produce.
 func inspectArchiveWithValidator(file collector.FileInfo, validator *safepath.Validator) (ExtractOperation, error) {
+	if err := registerDeflate64Support(); err != nil {
+		return ExtractOperation{}, err
+	}
+
 	archivePath := filepath.Join(file.Dir, file.Name)
 	op := ExtractOperation{ArchivePath: archivePath}
 
@@ -722,10 +823,10 @@ func validateCompressionMethods(entries []*zip.File) error {
 }
 
 // isCompressionMethodSupported reports whether method is a zip compression
-// algorithm that this package can extract. Currently only [zip.Store]
-// (uncompressed) and [zip.Deflate] are supported.
+// algorithm that this package can extract. Supported methods are [zip.Store],
+// [zip.Deflate], and Deflate64 (method 9).
 func isCompressionMethodSupported(method uint16) bool {
-	return method == zip.Store || method == zip.Deflate
+	return method == zip.Store || method == zip.Deflate || method == deflate64.Method
 }
 
 // compressionMethodName returns a human-readable name for a zip compression
@@ -737,11 +838,22 @@ func compressionMethodName(method uint16) string {
 		return "store"
 	case zip.Deflate:
 		return "deflate"
-	case zipMethodDeflate64:
+	case deflate64.Method:
 		return "deflate64"
 	default:
 		return "unknown"
 	}
+}
+
+// registerDeflate64Support registers the Deflate64 (method 9) decompressor
+// with the archive/zip package so that archives using this compression method
+// can be extracted. Returns an error if registration fails.
+func registerDeflate64Support() error {
+	if err := deflate64.Register(); err != nil {
+		return fmt.Errorf("register deflate64 support: %w", err)
+	}
+
+	return nil
 }
 
 // isArchive reports whether filePath is a valid zip archive by attempting to

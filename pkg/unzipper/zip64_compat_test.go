@@ -4,10 +4,13 @@ import (
 	"archive/zip"
 	"bytes"
 	"encoding/binary"
+	"hash/crc32"
 	"io"
 	"os"
 	"path/filepath"
 	"testing"
+
+	"btidy/pkg/deflate64"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -88,6 +91,44 @@ func TestOpenArchiveReaderWithZip64LocatorCompatibility(t *testing.T) {
 	assert.True(t, isArchive(archivePath))
 }
 
+func TestOpenArchiveReaderWithZip64LocatorCompatibilityAndDeflate64(t *testing.T) {
+	root := t.TempDir()
+	archivePath := filepath.Join(root, "zip64_disks_zero_deflate64.zip")
+	payload := []byte("hello zip64 deflate64")
+	createSparseZip64Deflate64Archive(t, archivePath, payload)
+	setZip64LocatorTotalDisks(t, archivePath, 0)
+
+	standardReader, standardErr := zip.OpenReader(archivePath)
+	if standardReader != nil {
+		_ = standardReader.Close()
+	}
+	require.Error(t, standardErr)
+	require.ErrorIs(t, standardErr, zip.ErrFormat)
+
+	reader, err := openArchiveReader(archivePath)
+	require.NoError(t, err)
+	t.Cleanup(func() {
+		require.NoError(t, reader.Close())
+	})
+
+	if assert.Len(t, reader.files, 1) {
+		assert.Equal(t, deflate64.Method, reader.files[0].Method)
+		assert.Equal(t, "hello.txt", reader.files[0].Name)
+	}
+
+	rc, err := reader.files[0].Open()
+	require.NoError(t, err)
+	t.Cleanup(func() {
+		require.NoError(t, rc.Close())
+	})
+
+	content, err := io.ReadAll(rc)
+	require.NoError(t, err)
+	assert.Equal(t, string(payload), string(content))
+
+	assert.True(t, isArchive(archivePath))
+}
+
 func createSparseZip64Archive(t *testing.T, archivePath string) {
 	t.Helper()
 
@@ -110,6 +151,41 @@ func createSparseZip64Archive(t *testing.T, archivePath string) {
 
 	_, err = w.Write([]byte("hello zip64"))
 	require.NoError(t, err)
+	require.NoError(t, zw.Close())
+}
+
+func createSparseZip64Deflate64Archive(t *testing.T, archivePath string, payload []byte) {
+	t.Helper()
+
+	const sparseOffset = int64(zip32Marker) + 256
+
+	f, err := os.Create(archivePath)
+	require.NoError(t, err)
+	defer func() {
+		require.NoError(t, f.Close())
+	}()
+
+	_, err = f.Seek(sparseOffset, io.SeekStart)
+	require.NoError(t, err)
+
+	zw := zip.NewWriter(f)
+	zw.SetOffset(sparseOffset)
+
+	compressed := deflateStoredBlock(t, payload)
+	fh := &zip.FileHeader{
+		Name:               "hello.txt",
+		Method:             deflate64.Method,
+		CRC32:              crc32.ChecksumIEEE(payload),
+		UncompressedSize64: uint64(len(payload)),
+		CompressedSize64:   uint64(len(compressed)),
+	}
+
+	w, err := zw.CreateRaw(fh)
+	require.NoError(t, err)
+
+	_, err = w.Write(compressed)
+	require.NoError(t, err)
+
 	require.NoError(t, zw.Close())
 }
 

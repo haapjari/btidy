@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"encoding/binary"
 	"fmt"
+	"hash/crc32"
 	"io"
 	"io/fs"
 	"math/rand/v2"
@@ -13,6 +14,7 @@ import (
 	"testing"
 
 	"btidy/pkg/collector"
+	"btidy/pkg/deflate64"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -531,17 +533,41 @@ func TestExtractArchivesWithProgressRecursively(t *testing.T) {
 		assert.Equal(t, 0, result.ArchivesFound, "corrupt zip should not pass isArchive filter")
 	})
 
+	t.Run("archive with deflate64 compression method is extracted", func(t *testing.T) {
+		root := t.TempDir()
+		archivePath := filepath.Join(root, "deflate64.zip")
+		createDeflate64Archive(t, archivePath, "method9.txt", []byte("payload"))
+
+		uz, files := setup(t, root, false)
+		result, err := uz.ExtractArchivesWithProgressRecursively(files, nil)
+		require.NoError(t, err)
+
+		require.Len(t, result.Operations, 1)
+		op := result.Operations[0]
+		assert.False(t, op.Skipped)
+		assert.Equal(t, 0, result.SkippedCount)
+		assert.Equal(t, 1, result.ExtractedArchives)
+		assert.Equal(t, 1, result.DeletedArchives)
+
+		content, readErr := os.ReadFile(filepath.Join(root, "method9.txt"))
+		require.NoError(t, readErr)
+		assert.Equal(t, "payload", string(content))
+
+		_, statErr := os.Stat(archivePath)
+		require.Error(t, statErr, "deflate64 archive should be removed after extraction")
+	})
+
 	t.Run("archive with unsupported compression method is skipped", func(t *testing.T) {
 		root := t.TempDir()
 
 		srcDir := filepath.Join(root, "unsupported_method_src")
 		require.NoError(t, os.MkdirAll(srcDir, 0o755))
-		require.NoError(t, os.WriteFile(filepath.Join(srcDir, "method9.txt"), []byte("payload"), 0o644))
+		require.NoError(t, os.WriteFile(filepath.Join(srcDir, "unsupported.txt"), []byte("payload"), 0o644))
 
 		archivePath := filepath.Join(root, "unsupported_method.zip")
 		createZipArchive(t, srcDir, archivePath)
 		require.NoError(t, os.RemoveAll(srcDir))
-		setAllZipEntryMethods(t, archivePath, zipMethodDeflate64)
+		setAllZipEntryMethods(t, archivePath, 99)
 
 		uz, files := setup(t, root, false)
 		result, err := uz.ExtractArchivesWithProgressRecursively(files, nil)
@@ -552,14 +578,14 @@ func TestExtractArchivesWithProgressRecursively(t *testing.T) {
 
 		assert.True(t, op.Skipped)
 		assert.Contains(t, op.SkipReason, "unsupported compression method")
-		assert.Contains(t, op.SkipReason, "deflate64")
+		assert.Contains(t, op.SkipReason, "unknown")
 		assert.Equal(t, 1, result.SkippedCount)
 		assert.Equal(t, 0, result.ExtractedArchives)
 		assert.Equal(t, 0, result.DeletedArchives)
 
 		_, statErr := os.Stat(archivePath)
 		require.NoError(t, statErr, "unsupported archive must remain on disk")
-		_, readErr := os.Stat(filepath.Join(root, "method9.txt"))
+		_, readErr := os.Stat(filepath.Join(root, "unsupported.txt"))
 		require.Error(t, readErr, "entry should not be extracted when archive is skipped")
 	})
 
@@ -1066,4 +1092,48 @@ func setAllZipEntryMethods(t *testing.T, archivePath string, method uint16) {
 	}
 
 	require.NoError(t, os.WriteFile(archivePath, data, 0o644))
+}
+
+func createDeflate64Archive(t *testing.T, archivePath, entryName string, payload []byte) {
+	t.Helper()
+
+	archiveFile, err := os.Create(archivePath)
+	require.NoError(t, err)
+	defer archiveFile.Close()
+
+	zw := zip.NewWriter(archiveFile)
+
+	compressed := deflateStoredBlock(t, payload)
+	fh := &zip.FileHeader{
+		Name:               filepath.ToSlash(entryName),
+		Method:             deflate64.Method,
+		CRC32:              crc32.ChecksumIEEE(payload),
+		UncompressedSize64: uint64(len(payload)),
+		CompressedSize64:   uint64(len(compressed)),
+	}
+
+	w, err := zw.CreateRaw(fh)
+	require.NoError(t, err)
+
+	_, err = w.Write(compressed)
+	require.NoError(t, err)
+
+	require.NoError(t, zw.Close())
+}
+
+func deflateStoredBlock(t *testing.T, payload []byte) []byte {
+	t.Helper()
+	require.LessOrEqual(t, len(payload), 0xffff)
+
+	length := len(payload)
+	block := make([]byte, 5+len(payload))
+	block[0] = 0x01
+	block[1] = byte(length & 0xff)
+	block[2] = byte((length >> 8) & 0xff)
+	nlen := ^length & 0xffff
+	block[3] = byte(nlen & 0xff)
+	block[4] = byte((nlen >> 8) & 0xff)
+	copy(block[5:], payload)
+
+	return block
 }

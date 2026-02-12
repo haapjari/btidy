@@ -19,7 +19,7 @@ import (
 // Entry represents a single filesystem mutation logged to the journal.
 type Entry struct {
 	Timestamp time.Time `json:"ts"`
-	Type      string    `json:"type"`           // "trash", "rename", "mkdir", "extract"
+	Type      string    `json:"type"`           // "trash", "replace", "rename", "mkdir", "extract"
 	Source    string    `json:"src"`            // original path (relative to root)
 	Dest      string    `json:"dst,omitempty"`  // new path (relative to root)
 	Hash      string    `json:"hash,omitempty"` // content hash at time of operation

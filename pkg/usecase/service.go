@@ -392,8 +392,9 @@ type fileWorkflowResult[T any] struct {
 
 // Workflow invariant: no path is opened or mutated before validator approval.
 type workflowTarget struct {
-	rootDir   string
-	validator *safepath.Validator
+	rootDir     string
+	validator   *safepath.Validator
+	undoTrasher *trash.Trasher
 }
 
 func runFileWorkflow[T any](
@@ -892,6 +893,15 @@ func unzipJournalEntries(result unzipper.Result, rootDir string) []journal.Entry
 		if op.Error != nil || op.Skipped {
 			continue
 		}
+		for _, replaced := range op.ReplacedFiles {
+			entries = append(entries, journal.Entry{
+				Type:    "replace",
+				Source:  relPath(rootDir, replaced.OriginalPath),
+				Dest:    relPath(rootDir, replaced.TrashedTo),
+				Hash:    replaced.Hash,
+				Success: true,
+			})
+		}
 		if op.ExtractionComplete {
 			entries = append(entries, journal.Entry{
 				Type:    "extract",
@@ -1003,6 +1013,11 @@ func (s *Service) RunUndo(req UndoRequest) (UndoExecution, error) {
 
 	runID := extractRunID(journalPath)
 
+	target, err = prepareUndoTarget(target, req.DryRun)
+	if err != nil {
+		return UndoExecution{}, err
+	}
+
 	exec := UndoExecution{
 		RootDir:     target.rootDir,
 		JournalPath: journalPath,
@@ -1054,6 +1069,8 @@ func undoEntry(target workflowTarget, entry journal.Entry, dryRun bool) UndoOper
 	switch entry.Type {
 	case "trash":
 		return undoTrash(target, entry, dryRun)
+	case "replace":
+		return undoReplace(target, entry, dryRun)
 	case "rename":
 		return undoRename(target, entry, dryRun)
 	case "extract":
@@ -1154,6 +1171,102 @@ func undoTrash(target workflowTarget, entry journal.Entry, dryRun bool) UndoOper
 
 	return undoMove(target, entry, dryRun, trashedAbs, sourceAbs, undoActionRestore,
 		"trashed file not found: "+entry.Dest)
+}
+
+// undoReplace restores a file that was replaced during unzip extraction.
+// If the destination path currently exists, it is first moved to undo trash
+// so the original pre-extraction file can be restored without data loss.
+func undoReplace(target workflowTarget, entry journal.Entry, dryRun bool) UndoOperation {
+	trashedAbs := filepath.Join(target.rootDir, entry.Dest)
+	sourceAbs := filepath.Join(target.rootDir, entry.Source)
+
+	base := UndoOperation{
+		EntryType: entry.Type,
+		Source:    entry.Source,
+		Dest:      entry.Dest,
+		Action:    undoActionRestore,
+	}
+
+	if _, statErr := os.Lstat(trashedAbs); statErr != nil {
+		base.Action = undoActionSkip
+		base.SkipReason = "replaced file backup not found: " + entry.Dest
+		return base
+	}
+
+	if reason, changed := verifyHashBeforeUndo(trashedAbs, entry.Hash); changed {
+		base.Action = undoActionSkip
+		base.SkipReason = reason
+		return base
+	}
+
+	if dryRun {
+		return base
+	}
+
+	skipReason, backupErr := backupUndoReplaceDestination(target, sourceAbs, entry.Source)
+	if backupErr != nil {
+		base.Error = backupErr
+		return base
+	}
+	if skipReason != "" {
+		base.Action = undoActionSkip
+		base.SkipReason = skipReason
+		return base
+	}
+
+	parentDir := filepath.Dir(sourceAbs)
+	if mkdirErr := target.validator.SafeMkdirAll(parentDir); mkdirErr != nil {
+		base.Error = fmt.Errorf("create parent directory: %w", mkdirErr)
+		return base
+	}
+
+	if renameErr := target.validator.SafeRename(trashedAbs, sourceAbs); renameErr != nil {
+		base.Error = fmt.Errorf("restore: %w", renameErr)
+		return base
+	}
+
+	return base
+}
+
+func prepareUndoTarget(target workflowTarget, dryRun bool) (workflowTarget, error) {
+	if dryRun {
+		return target, nil
+	}
+
+	undoTrasher, undoTrashErr := initTrasher(target.rootDir, target.validator, "undo")
+	if undoTrashErr != nil {
+		return workflowTarget{}, fmt.Errorf("failed to initialize undo trash: %w", undoTrashErr)
+	}
+	target.undoTrasher = undoTrasher
+
+	return target, nil
+}
+
+func backupUndoReplaceDestination(
+	target workflowTarget,
+	sourceAbs, sourceRel string,
+) (skipReason string, err error) {
+	sourceInfo, statErr := os.Lstat(sourceAbs)
+	if os.IsNotExist(statErr) {
+		return "", nil
+	}
+	if statErr != nil {
+		return "", fmt.Errorf("check restore destination: %w", statErr)
+	}
+
+	if sourceInfo.IsDir() {
+		return "cannot restore over existing directory: " + sourceRel, nil
+	}
+
+	if target.undoTrasher == nil {
+		return "", errors.New("backup existing destination before restore: undo trasher unavailable")
+	}
+
+	if trashErr := target.undoTrasher.Trash(sourceAbs); trashErr != nil {
+		return "", fmt.Errorf("backup existing destination before restore: %w", trashErr)
+	}
+
+	return "", nil
 }
 
 // undoRename reverses a rename by moving the file from dest back to source.

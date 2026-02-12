@@ -15,9 +15,9 @@ mkdir -p "$TEST_DIR"
 # ============================================================
 # Scenario 1: Exact duplicates with _N suffix (common after flatten)
 # ============================================================
-echo "video content 12345" > "$TEST_DIR/2017-08-03_4_kills_eco_round.flv"
-echo "video content 12345" > "$TEST_DIR/2017-08-03_4_kills_eco_round_1.flv"
-echo "video content 12345" > "$TEST_DIR/2017-08-03_4_kills_eco_round_2.flv"
+echo "video content 12345" > "$TEST_DIR/2017-08-03_4_cs_frags_eco_round.flv"
+echo "video content 12345" > "$TEST_DIR/2017-08-03_4_cs_frags_eco_round_1.flv"
+echo "video content 12345" > "$TEST_DIR/2017-08-03_4_cs_frags_eco_round_2.flv"
 
 # ============================================================
 # Scenario 2: Duplicates with different names entirely
@@ -79,7 +79,7 @@ echo "Total files:"
 find "$TEST_DIR" -type f | wc -l
 echo ""
 echo "Expected duplicates to remove:"
-echo "  - 2x 2017-08-03_4_kills_eco_round*.flv (keep 1 of 3)"
+echo "  - 2x 2017-08-03_4_cs_frags_eco_round*.flv (keep 1 of 3)"
 echo "  - 3x report*.pdf (keep 1 of 4)"
 echo "  - 2x photo*.jpg (keep 1 of 3)"
 echo "  - 1x large_file*.bin (keep 1 of 2)"
