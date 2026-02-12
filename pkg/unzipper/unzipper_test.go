@@ -105,6 +105,36 @@ func TestUnzip(t *testing.T) {
 		assert.Contains(t, err.Error(), "contains path traversal")
 	})
 
+	t.Run("allows filename containing double dots", func(t *testing.T) {
+		root := t.TempDir()
+
+		archivePath := filepath.Join(root, "double_dots.zip")
+		f, err := os.Create(archivePath)
+		require.NoError(t, err)
+
+		zw := zip.NewWriter(f)
+		w, err := zw.Create("Tiedostot/Suunnitelma/Isompi kuin -ohjelma..txt")
+		require.NoError(t, err)
+		_, err = w.Write([]byte("ok"))
+		require.NoError(t, err)
+		require.NoError(t, zw.Close())
+		require.NoError(t, f.Close())
+
+		file := collector.FileInfo{
+			Dir:  root,
+			Name: "double_dots.zip",
+			Path: archivePath,
+		}
+
+		_, err = unzip(file)
+		require.NoError(t, err)
+
+		extractedPath := filepath.Join(root, "Tiedostot", "Suunnitelma", "Isompi kuin -ohjelma..txt")
+		content, err := os.ReadFile(extractedPath)
+		require.NoError(t, err)
+		assert.Equal(t, "ok", string(content))
+	})
+
 	t.Run("returns error for non-existent archive", func(t *testing.T) {
 		root := t.TempDir()
 
@@ -606,6 +636,63 @@ func TestIsArchive(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			got := isArchive(tc.path)
 			assert.Equal(t, tc.want, got, "isArchive(%s) returned unexpected result", tc.path)
+		})
+	}
+}
+
+func TestValidateArchiveEntryPath(t *testing.T) {
+	tests := []struct {
+		name    string
+		entry   string
+		wantErr bool
+	}{
+		{
+			name:    "valid name with double dots",
+			entry:   "Tiedostot/Suunnitelma/Isompi kuin -ohjelma..txt",
+			wantErr: false,
+		},
+		{
+			name:    "unix path traversal",
+			entry:   "../escape.txt",
+			wantErr: true,
+		},
+		{
+			name:    "normalized parent traversal",
+			entry:   "a/../b.txt",
+			wantErr: true,
+		},
+		{
+			name:    "windows path traversal",
+			entry:   `..\\escape.txt`,
+			wantErr: true,
+		},
+		{
+			name:    "absolute unix path",
+			entry:   "/escape.txt",
+			wantErr: true,
+		},
+		{
+			name:    "windows drive absolute path",
+			entry:   "C:/escape.txt",
+			wantErr: true,
+		},
+		{
+			name:    "windows separators without traversal",
+			entry:   `Tiedostot\\Suunnitelma\\safe.txt`,
+			wantErr: false,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			err := validateArchiveEntryPath(tc.entry)
+			if tc.wantErr {
+				require.Error(t, err)
+				assert.ErrorContains(t, err, "contains path traversal")
+				return
+			}
+
+			require.NoError(t, err)
 		})
 	}
 }

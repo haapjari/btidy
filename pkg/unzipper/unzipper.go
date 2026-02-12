@@ -6,8 +6,12 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
+	"log/slog"
 	"os"
+	"path"
 	"path/filepath"
+	"regexp"
 	"strings"
 
 	"btidy/pkg/collector"
@@ -16,8 +20,18 @@ import (
 )
 
 const (
+	// progressStageExtracting is the stage name reported to progress callbacks during archive extraction.
 	progressStageExtracting = "extracting"
+
+	// maxDecompressedSize is the maximum allowed size for a single extracted file (100 GiB).
+	// This guards against zip-bomb attacks where a small archive expands to enormous size,
+	// while still allowing extraction of very large legitimate files.
+	maxDecompressedSize = 100 << 30
 )
+
+var errArchiveEntryPathTraversal = errors.New("contains path traversal")
+
+var windowsVolumePrefixPattern = regexp.MustCompile(`^[A-Za-z]:`)
 
 // ExtractOperation represents a single archive extraction operation.
 type ExtractOperation struct {
@@ -285,14 +299,23 @@ func (u *Unzipper) extractBatch(
 }
 
 // processArchive extracts or inspects a single archive, then removes it if not in dry-run mode.
+// processArchive handles a single archive file by either inspecting it (dry-run)
+// or extracting its contents to the archive's parent directory. In non-dry-run mode,
+// the source archive is removed after successful extraction — moved to trash if a
+// trasher is configured, or permanently deleted otherwise.
+//
+// The returned [ExtractOperation] contains extraction statistics (files, dirs,
+// nested archives) and, when applicable, the trash destination path. If extraction
+// or archive removal fails, the partial operation result is returned alongside the
+// error, with op.Error set to the cause.
 func (u *Unzipper) processArchive(archive collector.FileInfo, archivePath string) (ExtractOperation, error) {
 	var op ExtractOperation
 	var err error
 
 	if u.dryRun {
-		op, err = inspectArchive(archive)
+		op, err = inspectArchiveWithValidator(archive, u.validator)
 	} else {
-		op, err = unzip(archive)
+		op, err = unzipWithValidator(archive, u.validator)
 	}
 
 	if err != nil {
@@ -370,6 +393,78 @@ func filterOnlyArchives(blob []collector.FileInfo) []collector.FileInfo {
 	return filteredBlob
 }
 
+// normalizeArchiveEntryPath converts an archive entry name to a canonical
+// forward-slash path by applying [filepath.ToSlash] and replacing any
+// remaining literal backslash sequences with forward slashes.
+func normalizeArchiveEntryPath(entryName string) string {
+	return strings.ReplaceAll(filepath.ToSlash(entryName), `\\`, "/")
+}
+
+// hasWindowsVolumePrefix reports whether pathName starts with a Windows
+// drive-volume prefix (e.g., "C:").
+func hasWindowsVolumePrefix(pathName string) bool {
+	return windowsVolumePrefixPattern.MatchString(pathName)
+}
+
+// validateArchiveEntryPath checks that entryName is a safe, relative file path
+// suitable for extraction. It rejects absolute paths, traversal segments,
+// Windows drive-volume prefixes, and entries not representable as local paths.
+// Returns [errArchiveEntryPathTraversal] for every rejected entry.
+func validateArchiveEntryPath(entryName string) error {
+	normalized := normalizeArchiveEntryPath(entryName)
+	if normalized == "" {
+		return errArchiveEntryPathTraversal
+	}
+
+	if strings.HasPrefix(normalized, "/") || hasWindowsVolumePrefix(normalized) {
+		return errArchiveEntryPathTraversal
+	}
+
+	trimmed := strings.TrimRight(normalized, "/")
+	if trimmed == "" || !fs.ValidPath(trimmed) {
+		return errArchiveEntryPathTraversal
+	}
+
+	cleanPath := path.Clean(trimmed)
+	if cleanPath == "." || strings.HasPrefix(cleanPath, "/") || hasWindowsVolumePrefix(cleanPath) {
+		return errArchiveEntryPathTraversal
+	}
+
+	if _, err := filepath.Localize(cleanPath); err != nil {
+		return errArchiveEntryPathTraversal
+	}
+
+	return nil
+}
+
+// resolveArchiveEntryPath validates and resolves an archive entry name to a safe
+// absolute filesystem path under baseDir. It first checks the entry name for path
+// traversal attempts, then normalizes platform-specific separators and joins the
+// result with baseDir. When a [safepath.Validator] is provided, the resolved path
+// is additionally validated to ensure it remains within the allowed root directory.
+// Returns the resolved absolute path or an error if the entry name is invalid or
+// escapes the target directory.
+func resolveArchiveEntryPath(
+	baseDir string,
+	entryName string,
+	validator *safepath.Validator,
+) (string, error) {
+	if err := validateArchiveEntryPath(entryName); err != nil {
+		return "", err
+	}
+
+	normalized := normalizeArchiveEntryPath(entryName)
+	targetPath := filepath.Join(baseDir, filepath.FromSlash(normalized))
+
+	if validator != nil {
+		if err := validator.ValidatePathForWrite(targetPath); err != nil {
+			return "", fmt.Errorf("%w: %w", errArchiveEntryPathTraversal, err)
+		}
+	}
+
+	return targetPath, nil
+}
+
 // unzip extracts all entries from the zip archive identified by file into the
 // same directory that contains the archive. It creates directories as needed and
 // writes regular files with their archived content. Archive entries containing
@@ -377,6 +472,24 @@ func filterOnlyArchives(blob []collector.FileInfo) []collector.FileInfo {
 // attacks. Returns an ExtractOperation describing what was extracted and any
 // error encountered.
 func unzip(file collector.FileInfo) (ExtractOperation, error) {
+	return unzipWithValidator(file, nil)
+}
+
+// unzipWithValidator extracts all entries from the zip archive identified by file
+// into the archive's parent directory, optionally enforcing path containment via
+// the provided [safepath.Validator]. When validator is non-nil, every resolved
+// extraction path is checked to ensure it remains within the allowed root
+// directory; a nil validator skips this additional check (basic path-traversal
+// validation is still performed by [resolveArchiveEntryPath]).
+//
+// For each archive entry, directories are created with their archived permission
+// bits (ORed with 0o755), and regular files are written via [extractFile]. Any
+// extracted file that is itself a recognized archive format increments the
+// NestedArchives counter in the returned [ExtractOperation].
+//
+// Extraction stops on the first error encountered and returns both the partial
+// operation result and the error.
+func unzipWithValidator(file collector.FileInfo, validator *safepath.Validator) (ExtractOperation, error) {
 	archivePath := filepath.Join(file.Dir, file.Name)
 	op := ExtractOperation{ArchivePath: archivePath}
 
@@ -390,12 +503,11 @@ func unzip(file collector.FileInfo) (ExtractOperation, error) {
 	}()
 
 	for _, entry := range r.File {
-		if strings.Contains(entry.Name, "..") {
-			op.Error = fmt.Errorf("illegal entry path %q: contains path traversal", entry.Name)
+		targetPath, pathErr := resolveArchiveEntryPath(file.Dir, entry.Name, validator)
+		if pathErr != nil {
+			op.Error = fmt.Errorf("illegal entry path %q: %w", entry.Name, pathErr)
 			return op, op.Error
 		}
-
-		targetPath := filepath.Join(file.Dir, filepath.FromSlash(entry.Name))
 
 		if entry.FileInfo().IsDir() {
 			if mkErr := os.MkdirAll(targetPath, entry.Mode().Perm()|0o755); mkErr != nil {
@@ -427,10 +539,16 @@ func unzip(file collector.FileInfo) (ExtractOperation, error) {
 	return op, nil
 }
 
-// inspectArchive reads the zip archive catalog without extracting any files,
-// returning an ExtractOperation with the counts that would result from a real
-// extraction. Used for dry-run mode.
-func inspectArchive(file collector.FileInfo) (ExtractOperation, error) {
+// inspectArchiveWithValidator performs a dry-run inspection of the zip archive
+// identified by file, validating all entry paths against the provided
+// [safepath.Validator] without extracting any content to disk. It counts the
+// number of regular files and directories contained in the archive, returning
+// an [ExtractOperation] with ExtractionComplete set to true on success.
+//
+// Inspection stops on the first invalid entry path or archive open failure,
+// returning both the partial operation result and the error. This is used in
+// dry-run mode to preview what an extraction would produce.
+func inspectArchiveWithValidator(file collector.FileInfo, validator *safepath.Validator) (ExtractOperation, error) {
 	archivePath := filepath.Join(file.Dir, file.Name)
 	op := ExtractOperation{ArchivePath: archivePath}
 
@@ -444,8 +562,8 @@ func inspectArchive(file collector.FileInfo) (ExtractOperation, error) {
 	}()
 
 	for _, entry := range r.File {
-		if strings.Contains(entry.Name, "..") {
-			op.Error = fmt.Errorf("illegal entry path %q: contains path traversal", entry.Name)
+		if _, pathErr := resolveArchiveEntryPath(file.Dir, entry.Name, validator); pathErr != nil {
+			op.Error = fmt.Errorf("illegal entry path %q: %w", entry.Name, pathErr)
 			return op, op.Error
 		}
 
@@ -460,11 +578,6 @@ func inspectArchive(file collector.FileInfo) (ExtractOperation, error) {
 	op.ExtractionComplete = true
 	return op, nil
 }
-
-// maxDecompressedSize is the maximum allowed size for a single extracted file (100 GiB).
-// This guards against zip-bomb attacks where a small archive expands to enormous size,
-// while still allowing extraction of very large legitimate files.
-const maxDecompressedSize = 100 << 30
 
 // extractFile writes a single zip file entry to targetPath. It opens the
 // compressed entry for reading, creates the destination file, and copies the
@@ -501,6 +614,7 @@ func extractFile(entry *zip.File, targetPath string) error {
 func isArchive(filePath string) bool {
 	r, err := zip.OpenReader(filePath)
 	if err != nil {
+		slog.Info("skipped a file: ", "skip", err.Error())
 		return false
 	}
 	_ = r.Close()
