@@ -14,7 +14,6 @@ import (
 	"strings"
 
 	"btidy/pkg/collector"
-	"btidy/pkg/deflate64"
 	"btidy/pkg/hasher"
 	"btidy/pkg/safepath"
 	"btidy/pkg/trash"
@@ -24,6 +23,9 @@ const (
 	// progressStageExtracting is the stage name reported
 	// to progress callbacks during archive extraction.
 	progressStageExtracting = "extracting"
+
+	// deflate64Method is the ZIP compression method ID for Deflate64.
+	deflate64Method uint16 = 9
 
 	// maxDecompressedSize is the maximum allowed size for
 	// a single extracted file (100 GiB). This guards
@@ -223,10 +225,6 @@ func NewWithValidator(
 ) (*Unzipper, error) {
 	if validator == nil {
 		return nil, errors.New("validator is required")
-	}
-
-	if err := registerDeflate64Support(); err != nil {
-		return nil, err
 	}
 
 	return &Unzipper{
@@ -585,10 +583,6 @@ func unzipWithValidator(
 	validator *safepath.Validator,
 	trasher *trash.Trasher,
 ) (ExtractOperation, error) {
-	if err := registerDeflate64Support(); err != nil {
-		return ExtractOperation{}, err
-	}
-
 	archivePath := filepath.Join(file.Dir, file.Name)
 	op := ExtractOperation{ArchivePath: archivePath}
 
@@ -730,10 +724,6 @@ func backupExistingFile(targetPath string, trasher *trash.Trasher) (bool, Replac
 // returning both the partial operation result and the error. This is used in
 // dry-run mode to preview what an extraction would produce.
 func inspectArchiveWithValidator(file collector.FileInfo, validator *safepath.Validator) (ExtractOperation, error) {
-	if err := registerDeflate64Support(); err != nil {
-		return ExtractOperation{}, err
-	}
-
 	archivePath := filepath.Join(file.Dir, file.Name)
 	op := ExtractOperation{ArchivePath: archivePath}
 
@@ -823,10 +813,10 @@ func validateCompressionMethods(entries []*zip.File) error {
 }
 
 // isCompressionMethodSupported reports whether method is a zip compression
-// algorithm that this package can extract. Supported methods are [zip.Store],
-// [zip.Deflate], and Deflate64 (method 9).
+// algorithm that this package can extract. Supported methods are [zip.Store]
+// and [zip.Deflate].
 func isCompressionMethodSupported(method uint16) bool {
-	return method == zip.Store || method == zip.Deflate || method == deflate64.Method
+	return method == zip.Store || method == zip.Deflate
 }
 
 // compressionMethodName returns a human-readable name for a zip compression
@@ -838,22 +828,11 @@ func compressionMethodName(method uint16) string {
 		return "store"
 	case zip.Deflate:
 		return "deflate"
-	case deflate64.Method:
+	case deflate64Method:
 		return "deflate64"
 	default:
 		return "unknown"
 	}
-}
-
-// registerDeflate64Support registers the Deflate64 (method 9) decompressor
-// with the archive/zip package so that archives using this compression method
-// can be extracted. Returns an error if registration fails.
-func registerDeflate64Support() error {
-	if err := deflate64.Register(); err != nil {
-		return fmt.Errorf("register deflate64 support: %w", err)
-	}
-
-	return nil
 }
 
 // isArchive reports whether filePath is a valid zip archive by attempting to

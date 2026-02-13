@@ -10,8 +10,6 @@ import (
 	"path/filepath"
 	"testing"
 
-	"btidy/pkg/deflate64"
-
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -91,42 +89,32 @@ func TestOpenArchiveReaderWithZip64LocatorCompatibility(t *testing.T) {
 	assert.True(t, isArchive(archivePath))
 }
 
-func TestOpenArchiveReaderWithZip64LocatorCompatibilityAndDeflate64(t *testing.T) {
+func TestExtractArchivesWithZip64LocatorCompatibilityAndDeflate64IsSkipped(t *testing.T) {
 	root := t.TempDir()
 	archivePath := filepath.Join(root, "zip64_disks_zero_deflate64.zip")
-	payload := []byte("hello zip64 deflate64")
-	createSparseZip64Deflate64Archive(t, archivePath, payload)
+	createSparseZip64Deflate64Archive(t, archivePath, []byte("hello zip64 deflate64"))
 	setZip64LocatorTotalDisks(t, archivePath, 0)
 
-	standardReader, standardErr := zip.OpenReader(archivePath)
-	if standardReader != nil {
-		_ = standardReader.Close()
-	}
-	require.Error(t, standardErr)
-	require.ErrorIs(t, standardErr, zip.ErrFormat)
-
-	reader, err := openArchiveReader(archivePath)
+	uz, err := New(root, false)
 	require.NoError(t, err)
-	t.Cleanup(func() {
-		require.NoError(t, reader.Close())
-	})
 
-	if assert.Len(t, reader.files, 1) {
-		assert.Equal(t, deflate64.Method, reader.files[0].Method)
-		assert.Equal(t, "hello.txt", reader.files[0].Name)
-	}
-
-	rc, err := reader.files[0].Open()
+	files, err := getAllFilesRecursively(root)
 	require.NoError(t, err)
-	t.Cleanup(func() {
-		require.NoError(t, rc.Close())
-	})
 
-	content, err := io.ReadAll(rc)
+	result, err := uz.ExtractArchivesWithProgressRecursively(files, nil)
 	require.NoError(t, err)
-	assert.Equal(t, string(payload), string(content))
 
-	assert.True(t, isArchive(archivePath))
+	require.Len(t, result.Operations, 1)
+	op := result.Operations[0]
+	assert.True(t, op.Skipped)
+	assert.Contains(t, op.SkipReason, "unsupported compression method")
+	assert.Contains(t, op.SkipReason, "deflate64")
+	assert.Equal(t, 1, result.SkippedCount)
+	assert.Equal(t, 0, result.ExtractedArchives)
+	assert.Equal(t, 0, result.DeletedArchives)
+
+	_, statErr := os.Stat(archivePath)
+	require.NoError(t, statErr, "deflate64 archive must remain on disk when skipped")
 }
 
 func createSparseZip64Archive(t *testing.T, archivePath string) {
@@ -174,7 +162,7 @@ func createSparseZip64Deflate64Archive(t *testing.T, archivePath string, payload
 	compressed := deflateStoredBlock(t, payload)
 	fh := &zip.FileHeader{
 		Name:               "hello.txt",
-		Method:             deflate64.Method,
+		Method:             deflate64Method,
 		CRC32:              crc32.ChecksumIEEE(payload),
 		UncompressedSize64: uint64(len(payload)),
 		CompressedSize64:   uint64(len(compressed)),

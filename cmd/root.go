@@ -68,9 +68,9 @@ Safety:
   A manifest snapshot is saved to .btidy/manifests/ before each operation.
   Advisory file locking prevents concurrent btidy processes.
 
-Third Party:
-  Deflate64 support uses zlib contrib/infback9 from https://github.com/madler/zlib (zlib License).
-  Full notices: see THIRD_PARTY_NOTICES.md in the project root.
+Compression:
+  ZIP methods store (0) and deflate (8) are supported.
+  Deflate64 (method 9) archives are currently skipped.
 
   The tool will NEVER modify files outside the specified directory.`,
 	}

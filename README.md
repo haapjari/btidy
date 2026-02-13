@@ -134,26 +134,15 @@ make test-e2e
 ./scripts/e2e.sh
 ```
 
+## ZIP Compression Support
+
+- Supported ZIP methods: `store` (0) and `deflate` (8).
+- Deflate64 (ZIP method 9) extraction is temporarily disabled; archives using method 9 are skipped (not extracted and not deleted).
+- Pure-Go Deflate64 support is planned in a follow-up phase.
+
 ## Third-Party
 
-- deflate64 ZIP decompression support uses zlib contrib/infback9 from https://github.com/madler/zlib
-- Upstream Tag: `v1.3.1`
-- LICENSE: zlib License
 - Notices: `THIRD_PARTY_NOTICES.md`
-- Integrity Check: `make verify-third-party`
-
-## CGO Toolchain Requirements
-
-Deflate64 support is built with CGO in all build modes.
-
-- Local build/test needs a C compiler (default: `gcc`) and standard C headers.
-- Release build (`make release-build`) currently targets Linux and Windows and requires:
-  - `x86_64-linux-gnu-gcc` (linux/amd64)
-  - `aarch64-linux-gnu-gcc` (linux/arm64)
-  - `x86_64-w64-mingw32-gcc` (windows/amd64)
-- Quick Checks:
-  - `make check-cgo`
-  - `make check-release-toolchains`
 
 # LICENSE
 

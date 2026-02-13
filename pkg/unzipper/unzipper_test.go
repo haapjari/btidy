@@ -14,7 +14,6 @@ import (
 	"testing"
 
 	"btidy/pkg/collector"
-	"btidy/pkg/deflate64"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -533,7 +532,7 @@ func TestExtractArchivesWithProgressRecursively(t *testing.T) {
 		assert.Equal(t, 0, result.ArchivesFound, "corrupt zip should not pass isArchive filter")
 	})
 
-	t.Run("archive with deflate64 compression method is extracted", func(t *testing.T) {
+	t.Run("archive with deflate64 compression method is skipped", func(t *testing.T) {
 		root := t.TempDir()
 		archivePath := filepath.Join(root, "deflate64.zip")
 		createDeflate64Archive(t, archivePath, "method9.txt", []byte("payload"))
@@ -544,17 +543,18 @@ func TestExtractArchivesWithProgressRecursively(t *testing.T) {
 
 		require.Len(t, result.Operations, 1)
 		op := result.Operations[0]
-		assert.False(t, op.Skipped)
-		assert.Equal(t, 0, result.SkippedCount)
-		assert.Equal(t, 1, result.ExtractedArchives)
-		assert.Equal(t, 1, result.DeletedArchives)
+		assert.True(t, op.Skipped)
+		assert.Contains(t, op.SkipReason, "unsupported compression method")
+		assert.Contains(t, op.SkipReason, "deflate64")
+		assert.Equal(t, 1, result.SkippedCount)
+		assert.Equal(t, 0, result.ExtractedArchives)
+		assert.Equal(t, 0, result.DeletedArchives)
 
-		content, readErr := os.ReadFile(filepath.Join(root, "method9.txt"))
-		require.NoError(t, readErr)
-		assert.Equal(t, "payload", string(content))
+		_, readErr := os.Stat(filepath.Join(root, "method9.txt"))
+		require.Error(t, readErr, "method 9 entry should not be extracted")
 
 		_, statErr := os.Stat(archivePath)
-		require.Error(t, statErr, "deflate64 archive should be removed after extraction")
+		require.NoError(t, statErr, "deflate64 archive must remain on disk when skipped")
 	})
 
 	t.Run("archive with unsupported compression method is skipped", func(t *testing.T) {
@@ -1106,7 +1106,7 @@ func createDeflate64Archive(t *testing.T, archivePath, entryName string, payload
 	compressed := deflateStoredBlock(t, payload)
 	fh := &zip.FileHeader{
 		Name:               filepath.ToSlash(entryName),
-		Method:             deflate64.Method,
+		Method:             deflate64Method,
 		CRC32:              crc32.ChecksumIEEE(payload),
 		UncompressedSize64: uint64(len(payload)),
 		CompressedSize64:   uint64(len(compressed)),
